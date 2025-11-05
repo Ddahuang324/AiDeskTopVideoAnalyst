@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+*.log
+.env*
+src/
+tests/
+.*
+*.config.js
+*.config.ts
