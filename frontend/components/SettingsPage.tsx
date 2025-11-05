@@ -1,12 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, Variants } from 'framer-motion';
 import { AI_MODELS } from '../constants';
-import { CustomPrompt } from '../types';
+import { ProxySettings } from '../types';
+import { fetchAppSettings, updateProxySettings } from '../src/services/settingsService';
 
 interface SettingsPageProps {
-    prompts: CustomPrompt[];
-    onSetPrompts: (prompts: CustomPrompt[]) => void;
-    onSetDefaultPrompt: (id: number) => void;
     selectedModel: string;
     onSelectModel: (modelId: string) => void;
 }
@@ -22,10 +20,16 @@ const contentVariants: Variants = {
   animate: { opacity: 1, y: 0, transition: { duration: 0.7, ease: 'easeOut' } },
 };
 
-const SettingsPage: React.FC<SettingsPageProps> = ({ prompts, onSetPrompts, onSetDefaultPrompt, selectedModel, onSelectModel }) => {
+const SettingsPage: React.FC<SettingsPageProps> = ({ selectedModel, onSelectModel }) => {
     const [apiKey, setApiKey] = useState('');
     const [isKeyVisible, setIsKeyVisible] = useState(false);
     const [saveMessage, setSaveMessage] = useState('');
+    const [proxyEnabled, setProxyEnabled] = useState(false);
+    const [proxyUrl, setProxyUrl] = useState('');
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+    const saveMessageTimeout = useRef<number | undefined>(undefined);
 
     // Load API Key from localStorage on component mount
     useEffect(() => {
@@ -33,27 +37,124 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ prompts, onSetPrompts, onSe
         if (savedApiKey) {
             setApiKey(savedApiKey);
         }
+
+        const savedModel = localStorage.getItem('gemini_model');
+        if (savedModel && savedModel !== selectedModel) {
+            onSelectModel(savedModel);
+        }
+    }, [onSelectModel, selectedModel]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadSettings = async () => {
+            setIsLoading(true);
+            setLoadError(null);
+
+            try {
+                const settings = await fetchAppSettings();
+                if (cancelled) {
+                    return;
+                }
+
+                const proxy: ProxySettings | undefined = settings.networking?.proxy;
+                setProxyEnabled(Boolean(proxy?.enabled));
+                setProxyUrl(proxy?.url ?? '');
+            } catch (error) {
+                if (cancelled) {
+                    return;
+                }
+                console.error('Failed to load app settings:', error);
+                setProxyEnabled(false);
+                setProxyUrl('');
+                setLoadError(error instanceof Error ? error.message : '无法加载代理配置');
+            } finally {
+                if (!cancelled) {
+                    setIsLoading(false);
+                }
+            }
+        };
+
+        void loadSettings();
+
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
-    const handleSaveSettings = () => {
-        if (!apiKey.trim()) {
+    useEffect(() => {
+        return () => {
+            if (saveMessageTimeout.current) {
+                window.clearTimeout(saveMessageTimeout.current);
+            }
+        };
+    }, []);
+
+    const handleSaveSettings = async () => {
+        const trimmedApiKey = apiKey.trim();
+        const trimmedProxyUrl = proxyUrl.trim();
+
+        if (!trimmedApiKey) {
             setSaveMessage('API 密钥不能为空');
-            setTimeout(() => setSaveMessage(''), 3000);
+            if (saveMessageTimeout.current) {
+                window.clearTimeout(saveMessageTimeout.current);
+            }
+            saveMessageTimeout.current = window.setTimeout(() => setSaveMessage(''), 3000);
             return;
         }
 
-        // Save API Key to localStorage
-        localStorage.setItem('gemini_api_key', apiKey);
-        setSaveMessage('配置保存成功！');
-        setTimeout(() => setSaveMessage(''), 3000);
-    };
+        if (proxyEnabled) {
+            if (!trimmedProxyUrl) {
+                setSaveMessage('代理地址不能为空');
+                if (saveMessageTimeout.current) {
+                    window.clearTimeout(saveMessageTimeout.current);
+                }
+                saveMessageTimeout.current = window.setTimeout(() => setSaveMessage(''), 3000);
+                return;
+            }
 
-    const handleSetDefault = (id: number) => {
-        onSetDefaultPrompt(id);
-    };
+            try {
+                const parsed = new URL(trimmedProxyUrl);
+                if (!['http:', 'https:'].includes(parsed.protocol)) {
+                    throw new Error('只支持 HTTP 或 HTTPS 代理协议');
+                }
+            } catch (error) {
+                setSaveMessage(error instanceof Error ? error.message : '代理地址格式不正确');
+                if (saveMessageTimeout.current) {
+                    window.clearTimeout(saveMessageTimeout.current);
+                }
+                saveMessageTimeout.current = window.setTimeout(() => setSaveMessage(''), 3000);
+                return;
+            }
+        }
 
-    const handleDelete = (id: number) => {
-        onSetPrompts(prompts.filter(p => p.id !== id));
+        setIsSaving(true);
+        setSaveMessage('');
+        setLoadError(null);
+
+        try {
+            localStorage.setItem('gemini_api_key', trimmedApiKey);
+            localStorage.setItem('gemini_model', selectedModel);
+
+            const updatedProxy: ProxySettings = await updateProxySettings({
+                enabled: proxyEnabled,
+                url: trimmedProxyUrl,
+            });
+
+            setProxyEnabled(updatedProxy.enabled);
+            setProxyUrl(updatedProxy.url);
+
+            setSaveMessage('配置保存成功！');
+        } catch (error) {
+            console.error('Failed to save settings:', error);
+            setSaveMessage(`保存失败：${error instanceof Error ? error.message : '未知错误'}`);
+        } finally {
+            setIsSaving(false);
+            if (saveMessageTimeout.current) {
+                window.clearTimeout(saveMessageTimeout.current);
+            }
+            saveMessageTimeout.current = window.setTimeout(() => setSaveMessage(''), 3000);
+        }
     };
     
   return (
@@ -70,7 +171,45 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ prompts, onSetPrompts, onSe
                 variants={contentVariants}
             >
                 <h1 className="text-3xl sm:text-4xl font-light tracking-widest uppercase text-[#222222]">设置</h1>
-                <p className="mt-3 text-gray-500 tracking-wide">管理您的应用设置和自定义提示</p>
+                <p className="mt-3 text-gray-500 tracking-wide">管理您的应用配置</p>
+            </motion.div>
+
+            <motion.div variants={contentVariants} className="mb-12">
+                <h2 className="text-2xl font-light text-[#222222] border-b border-gray-200 pb-4 mb-8">网络代理</h2>
+                <p className="text-sm text-gray-500 mb-4">在访问 Gemini API 之前配置代理。后端会使用该代理处理所有出站请求。</p>
+                {loadError && (
+                    <p className="mb-4 text-sm text-red-500">加载代理配置失败：{loadError}</p>
+                )}
+                <label className="flex items-center space-x-3">
+                    <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-gray-300 text-[#222222] focus:ring-[#B8860B]"
+                        checked={proxyEnabled}
+                        onChange={(e) => setProxyEnabled(e.target.checked)}
+                        disabled={isLoading || isSaving}
+                    />
+                    <span className="text-sm text-gray-700">启用 HTTP/HTTPS 代理</span>
+                </label>
+
+                {proxyEnabled && (
+                    <div className="mt-6">
+                        <label htmlFor="proxy-url" className="block text-md font-medium text-gray-800 mb-2">代理地址</label>
+                        <input
+                            id="proxy-url"
+                            type="text"
+                            value={proxyUrl}
+                            onChange={(e) => setProxyUrl(e.target.value)}
+                            placeholder="http://127.0.0.1:33210"
+                            className="w-full bg-transparent px-1 py-2 border-b-2 border-gray-300 focus:border-[#222222] focus:outline-none transition-colors"
+                            disabled={isSaving}
+                        />
+                        <p className="text-xs text-gray-500 mt-2">保存后将同步更新后端代理配置，无需手动修改环境变量。</p>
+                    </div>
+                )}
+
+                {isLoading && (
+                    <p className="mt-4 text-sm text-gray-500">正在加载当前代理配置…</p>
+                )}
             </motion.div>
 
             <motion.div variants={contentVariants} className="mb-12">
@@ -121,49 +260,18 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ prompts, onSetPrompts, onSe
 
                 <button 
                     onClick={handleSaveSettings}
-                    className="w-full bg-[#222222] text-white font-medium tracking-widest uppercase py-3 px-4 hover:bg-[#B8860B] transition-all duration-300 ease-in-out transform hover:scale-105"
+                    disabled={isSaving || isLoading}
+                    className={`w-full bg-[#222222] text-white font-medium tracking-widest uppercase py-3 px-4 transition-all duration-300 ease-in-out ${
+                        isSaving || isLoading ? 'opacity-60 cursor-not-allowed' : 'hover:bg-[#B8860B] transform hover:scale-105'
+                    }`}
                 >
-                    保存配置
+                    {isSaving ? '保存中…' : '保存配置'}
                 </button>
                 {saveMessage && (
                     <p className={`mt-3 text-center text-sm font-medium ${saveMessage.includes('成功') ? 'text-green-600' : 'text-red-600'}`}>
                         {saveMessage}
                     </p>
                 )}
-            </motion.div>
-
-            <motion.div variants={contentVariants}>
-                <div className="flex justify-between items-center border-b border-gray-200 pb-4 mb-6">
-                    <h2 className="text-2xl font-light text-[#222222]">自定义提示管理</h2>
-                    <button className="bg-[#222222] text-white font-medium tracking-widest uppercase text-xs py-2 px-4 hover:bg-[#B8860B] transition-all duration-300 ease-in-out">
-                        创建新提示
-                    </button>
-                </div>
-                
-                <div className="space-y-4">
-                    {prompts.map((prompt, index) => (
-                        <div key={prompt.id} className={`py-6 ${index !== prompts.length - 1 ? 'border-b border-gray-200' : ''}`}>
-                             <div className="flex items-center mb-2">
-                                <h3 className="font-medium text-lg text-gray-800">{prompt.title}</h3>
-                                {prompt.isDefault && (
-                                    <span className="ml-3 text-[#B8860B] border border-[#B8860B]/50 text-xs font-medium px-2 py-0.5 rounded-full">默认</span>
-                                )}
-                             </div>
-                             <p className="text-gray-600 text-sm mb-4 leading-relaxed">{prompt.content}</p>
-                             <div className="flex items-center space-x-4 text-sm font-medium">
-                                {!prompt.isDefault && (
-                                     <>
-                                        <button onClick={() => handleSetDefault(prompt.id)} className="text-gray-600 hover:text-[#B8860B] transition-colors">设为默认</button>
-                                        <span className="text-gray-300">|</span>
-                                     </>
-                                )}
-                                <button className="text-gray-600 hover:text-[#B8860B] transition-colors">编辑</button>
-                                <span className="text-gray-300">|</span>
-                                <button onClick={() => handleDelete(prompt.id)} className="text-red-500 hover:text-red-700 transition-colors">删除</button>
-                             </div>
-                        </div>
-                    ))}
-                </div>
             </motion.div>
         </div>
     </motion.div>

@@ -16,36 +16,15 @@ import {
 	getOrderedModels,
 	GEMINI_MODELS
 } from "../config/geminiConfig";
-
-// Configure proxy if provided
-const proxyUrl = process.env.GEMINI_HTTP_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-if (proxyUrl) {
-	try {
-		setGlobalDispatcher(new ProxyAgent(proxyUrl));
-		console.log(`[Gemini] Using proxy for outbound requests: ${proxyUrl}`);
-	} catch (e) {
-		console.warn("[Gemini] Failed to configure proxy agent:", e);
-	}
-}
+import { STAGE1_SYSTEM_PROMPT, STAGE2_SYSTEM_PROMPT } from "./promptTemplates";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 if (!apiKey) {
 	console.warn("[Gemini] GEMINI_API_KEY is not set. Requests will fail until a valid key is provided.");
 }
-const genAI = new GoogleGenerativeAI(apiKey);
 
 // Capacity error codes that should trigger model fallback
 const CAPACITY_ERROR_CODES = new Set([403, 429, 503]);
-
-// Initialize File Manager if available (Node/server-only)
-let fileManager: GoogleAIFileManager | null = null;
-try {
-	if (apiKey) {
-		fileManager = new GoogleAIFileManager(apiKey);
-	}
-} catch (error) {
-	console.warn("[Gemini] Could not initialize GoogleAIFileManager, will try fallbacks:", error);
-}
 
 export interface Observation {
 	startTimestamp: string;
@@ -75,6 +54,15 @@ export interface ActivityCard {
 	detailedSummary: string;
 	distractions?: ActivityCardDistraction[];
 	appSites?: ActivityCardAppSites;
+}
+
+export interface AnalysisResultOutput {
+	title: string;
+	summary: string;
+	tags: string[];
+	keyFindings?: { point: string; evidence: string[] }[];
+	productivityScore?: number;
+	nextActions?: string[];
 }
 
 const stripMarkdownFence = (payload: string): string =>
@@ -708,5 +696,266 @@ Return ONLY a JSON array with this EXACT structure:
 	
 	// All models failed
 	throw new Error(`Failed to generate activity cards after trying all models: ${lastError?.message || "Unknown error"}`);
+};
+
+/**
+ * 阶段1：基于用户自定义提示词生成自由文本的总结笔记
+ * 一阶提示词（STAGE1_SYSTEM_PROMPT）固定在后端，保证格式统一
+ * 二阶提示词（customSummaryPrompt）由用户在前端定义，影响内容风格
+ * @param stage1SystemPrompt 阶段1系统提示词（可选，默认使用内置）
+ * @param customSummaryPrompt 用户自定义的总结提示词（二阶提示词）
+ * @param activityCards 活动卡片数组
+ * @param observations 原始观察数据
+ * @param userSelectedModel 用户选择的模型
+ * @param providedApiKey API密钥
+ */
+export const draftSummaryNotes = async (
+	stage1SystemPrompt: string | undefined,
+	customSummaryPrompt: string,
+	activityCards: ActivityCard[],
+	observations: Observation[],
+	userSelectedModel?: GeminiModel,
+	providedApiKey?: string,
+): Promise<string> => {
+	const effectiveApiKey = providedApiKey || process.env.GEMINI_API_KEY || apiKey;
+	const genAIInstance = new GoogleGenerativeAI(effectiveApiKey);
+
+	// 构建活动卡片的文本摘要
+	const cardsSummary = activityCards
+		.map((card, idx) => 
+			`【活动${idx + 1}】 ${card.startTime} - ${card.endTime}\n` +
+			`标题: ${card.title}\n` +
+			`分类: ${card.category}${card.subcategory ? ` / ${card.subcategory}` : ''}\n` +
+			`总结: ${card.summary}\n` +
+			`详情: ${card.detailedSummary}` +
+			(card.appSites?.primary ? `\n应用: ${card.appSites.primary}${card.appSites.secondary ? ` / ${card.appSites.secondary}` : ''}` : '')
+		)
+		.join('\n\n');
+
+	// 使用提供的系统提示词或默认的
+	const effectiveSystemPrompt = stage1SystemPrompt || STAGE1_SYSTEM_PROMPT;
+
+	// 组合一阶提示词（系统）+ 二阶提示词（用户指导）+ 数据
+	const userMessage = `
+${effectiveSystemPrompt}
+
+【用户的自定义指导】
+${customSummaryPrompt}
+
+【可用的分析数据】
+- 活动卡片数: ${activityCards.length} 张
+- 原始观察数: ${observations.length} 条
+
+${cardsSummary}
+
+现在请根据上述要求，生成总结笔记：`;
+
+	let orderedModels: GeminiModel[];
+	if (userSelectedModel) {
+		console.log(`🎯 User selected model for stage 1: ${GEMINI_MODELS[userSelectedModel].displayName}`);
+		orderedModels = [
+			userSelectedModel,
+			...[GeminiModel.FLASH, GeminiModel.FLASH_LITE, GeminiModel.PRO].filter(m => m !== userSelectedModel)
+		];
+	} else {
+		orderedModels = getOrderedModels(DEFAULT_SUMMARIZATION_PREFERENCE);
+	}
+
+	let lastError: Error | null = null;
+
+	for (const modelName of orderedModels) {
+		try {
+			console.log(`📝 Drafting summary notes with model: ${GEMINI_MODELS[modelName].displayName}`);
+			const model = genAIInstance.getGenerativeModel({ model: modelName });
+
+			const result = await model.generateContent({
+				contents: [
+					{
+						role: "user",
+						parts: [{ text: userMessage }],
+					},
+				],
+				generationConfig: GENERATION_CONFIGS.summarization,
+			});
+
+			const notes = result.response.text().trim();
+			console.log(`✅ Summary notes drafted successfully with ${GEMINI_MODELS[modelName].displayName}`);
+			return notes;
+
+		} catch (error: any) {
+			lastError = error;
+			console.error(`❌ Error with ${GEMINI_MODELS[modelName].displayName}:`, error.message);
+
+			const isCapacityError = error.status && CAPACITY_ERROR_CODES.has(error.status);
+			const isLastModel = modelName === orderedModels[orderedModels.length - 1];
+
+			if (!isCapacityError || isLastModel) {
+				break;
+			}
+
+			console.log(`↘️ Falling back to next model...`);
+		}
+	}
+
+	throw new Error(`Failed to draft summary notes: ${lastError?.message || "Unknown error"}`);
+};
+
+/**
+ * 阶段2：将总结笔记转化为结构化JSON输出（AnalysisResult格式）
+ * 一阶提示词（STAGE2_SYSTEM_PROMPT）固定在后端，保证JSON格式统一
+ * 二阶提示词（customJsonPrompt）由用户在前端定义，指导内容的重点和风格
+ * @param summaryNotes 阶段1生成的总结笔记
+ * @param customJsonPrompt 用户自定义的JSON生成提示词（二阶提示词）
+ * @param activityCards 活动卡片数组
+ * @param videoMeta 视频元数据
+ * @param userSelectedModel 用户选择的模型
+ * @param providedApiKey API密钥
+ */
+export const synthesizeAnalysisResult = async (
+	summaryNotes: string,
+	customJsonPrompt: string,
+	activityCards: ActivityCard[],
+	videoMeta?: { durationSec?: number; fileName?: string },
+	userSelectedModel?: GeminiModel,
+	providedApiKey?: string,
+): Promise<AnalysisResultOutput> => {
+	const effectiveApiKey = providedApiKey || process.env.GEMINI_API_KEY || apiKey;
+	const genAIInstance = new GoogleGenerativeAI(effectiveApiKey);
+
+	// 组合一阶提示词（系统）+ 二阶提示词（用户指导）+ 数据
+	const userMessage = `
+${STAGE2_SYSTEM_PROMPT}
+
+【用户的自定义指导】
+${customJsonPrompt}
+
+【总结笔记（来自阶段1）】
+${summaryNotes}
+
+【视频元信息】
+${videoMeta ? JSON.stringify(videoMeta, null, 2) : "N/A"}
+
+【活动卡片数据】
+${JSON.stringify(activityCards, null, 2)}
+
+现在请根据上述要求，将总结笔记转化为JSON。仅输出JSON，不要任何其他文本。
+`;
+
+	const jsonSchema: Schema = {
+		type: SchemaType.OBJECT,
+		properties: {
+			title: { type: SchemaType.STRING },
+			summary: { type: SchemaType.STRING },
+			tags: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+			keyFindings: {
+				type: SchemaType.ARRAY,
+				items: {
+					type: SchemaType.OBJECT,
+					properties: {
+						point: { type: SchemaType.STRING },
+						evidence: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+					},
+					required: ["point", "evidence"],
+				},
+			},
+			productivityScore: { type: SchemaType.INTEGER },
+			nextActions: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+		},
+		required: ["title", "summary", "tags"],
+	};
+
+	let orderedModels: GeminiModel[];
+	if (userSelectedModel) {
+		console.log(`🎯 User selected model for stage 2: ${GEMINI_MODELS[userSelectedModel].displayName}`);
+		orderedModels = [
+			userSelectedModel,
+			...[GeminiModel.FLASH, GeminiModel.FLASH_LITE, GeminiModel.PRO].filter(m => m !== userSelectedModel)
+		];
+	} else {
+		orderedModels = getOrderedModels(DEFAULT_SUMMARIZATION_PREFERENCE);
+	}
+
+	let lastError: Error | null = null;
+
+	for (const modelName of orderedModels) {
+		try {
+			console.log(`📊 Synthesizing analysis result with model: ${GEMINI_MODELS[modelName].displayName}`);
+			const model = genAIInstance.getGenerativeModel({ model: modelName });
+
+			const result = await model.generateContent({
+				contents: [
+					{
+						role: "user",
+						parts: [{ text: userMessage }],
+					},
+				],
+				generationConfig: {
+					...GENERATION_CONFIGS.summarization,
+					responseSchema: jsonSchema,
+				},
+			});
+
+			const responseText = result.response.text();
+			const jsonString = stripMarkdownFence(responseText);
+			const parsed = JSON.parse(jsonString) as AnalysisResultOutput;
+
+			console.log(`✅ Analysis result synthesized successfully with ${GEMINI_MODELS[modelName].displayName}`);
+			return parsed;
+
+		} catch (error: any) {
+			lastError = error;
+			console.error(`❌ Error with ${GEMINI_MODELS[modelName].displayName}:`, error.message);
+
+			const isCapacityError = error.status && CAPACITY_ERROR_CODES.has(error.status);
+			const isLastModel = modelName === orderedModels[orderedModels.length - 1];
+
+			if (!isCapacityError || isLastModel) {
+				break;
+			}
+
+			console.log(`↘️ Falling back to next model...`);
+		}
+	}
+
+	throw new Error(`Failed to synthesize analysis result: ${lastError?.message || "Unknown error"}`);
+};
+
+/**
+ * 便捷方法：一键生成完整的AI总结结果
+ */
+export const generateAiSummaryResult = async (
+	stage1SystemPrompt: string | undefined,  // 阶段1系统提示词（可选）
+	customSummaryPrompt: string,
+	customJsonPrompt: string,
+	activityCards: ActivityCard[],
+	observations: Observation[],
+	videoMeta?: { durationSec?: number; fileName?: string },
+	userSelectedModel?: GeminiModel,
+	providedApiKey?: string,
+): Promise<AnalysisResultOutput> => {
+	console.log("🚀 Starting two-stage AI summary generation...");
+	
+	const notes = await draftSummaryNotes(
+		stage1SystemPrompt,  // 传递阶段1系统提示词
+		customSummaryPrompt,
+		activityCards,
+		observations,
+		userSelectedModel,
+		providedApiKey
+	);
+
+	console.log("📝 Stage 1 complete. Moving to stage 2...");
+
+	const result = await synthesizeAnalysisResult(
+		notes,
+		customJsonPrompt,
+		activityCards,
+		videoMeta,
+		userSelectedModel,
+		providedApiKey
+	);
+
+	console.log("✅ Two-stage AI summary generation complete!");
+	return result;
 };
 

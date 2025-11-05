@@ -10,6 +10,7 @@ interface NavigationProps {
 const navItems = [
   { page: Page.Home, label: '首页' },
   { page: Page.History, label: '分析历史' },
+  { page: Page.PromptManager, label: '提示词管理' },
   { page: Page.Settings, label: '设置' },
 ];
 

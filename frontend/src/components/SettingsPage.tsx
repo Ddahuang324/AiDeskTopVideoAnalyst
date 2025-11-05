@@ -118,29 +118,83 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ prompts, onSetPrompts, onSe
                     </button>
                 </div>
                 
-                <div className="space-y-4">
-                    {prompts.map((prompt, index) => (
-                        <div key={prompt.id} className={`py-6 ${index !== prompts.length - 1 ? 'border-b border-gray-200' : ''}`}>
-                             <div className="flex items-center mb-2">
-                                <h3 className="font-medium text-lg text-gray-800">{prompt.title}</h3>
-                                {prompt.isDefault && (
-                                    <span className="ml-3 text-[#B8860B] border border-[#B8860B]/50 text-xs font-medium px-2 py-0.5 rounded-full">默认</span>
-                                )}
-                             </div>
-                             <p className="text-gray-600 text-sm mb-4 leading-relaxed">{prompt.content}</p>
-                             <div className="flex items-center space-x-4 text-sm font-medium">
-                                {!prompt.isDefault && (
-                                     <>
-                                        <button onClick={() => handleSetDefault(prompt.id)} className="text-gray-600 hover:text-[#B8860B] transition-colors">设为默认</button>
-                                        <span className="text-gray-300">|</span>
-                                     </>
-                                )}
-                                <button className="text-gray-600 hover:text-[#B8860B] transition-colors">编辑</button>
-                                <span className="text-gray-300">|</span>
-                                <button onClick={() => handleDelete(prompt.id)} className="text-red-500 hover:text-red-700 transition-colors">删除</button>
-                             </div>
+                {/* 按提示词类型分组显示 */}
+                <div className="space-y-8">
+                    {/* 阶段1：总结提示词 */}
+                    <div>
+                        <h3 className="text-lg font-medium text-gray-700 mb-4 pb-2 border-b border-gray-100">
+                            📝 阶段1：总结提示词（用于生成初步总结笔记）
+                        </h3>
+                        <div className="space-y-4 pl-4">
+                            {prompts.filter(p => p.type === 'summary').length > 0 ? (
+                                prompts.filter(p => p.type === 'summary').map((prompt, index) => (
+                                    <div key={prompt.id} className="py-4 border-l-2 border-[#B8860B]/30 pl-4">
+                                        <div className="flex items-center mb-2">
+                                            <h4 className="font-medium text-gray-800">{prompt.title}</h4>
+                                            {prompt.isDefault && (
+                                                <span className="ml-3 text-[#B8860B] border border-[#B8860B]/50 text-xs font-medium px-2 py-0.5 rounded-full">默认</span>
+                                            )}
+                                        </div>
+                                        {prompt.description && (
+                                            <p className="text-xs text-gray-500 mb-2">{prompt.description}</p>
+                                        )}
+                                        <p className="text-gray-600 text-sm mb-3 leading-relaxed">{prompt.content}</p>
+                                        <div className="flex items-center space-x-3 text-sm font-medium">
+                                            {!prompt.isDefault && (
+                                                <>
+                                                    <button onClick={() => handleSetDefault(prompt.id)} className="text-gray-600 hover:text-[#B8860B] transition-colors">设为默认</button>
+                                                    <span className="text-gray-300">|</span>
+                                                </>
+                                            )}
+                                            <button className="text-gray-600 hover:text-[#B8860B] transition-colors">编辑</button>
+                                            <span className="text-gray-300">|</span>
+                                            <button onClick={() => handleDelete(prompt.id)} className="text-red-500 hover:text-red-700 transition-colors">删除</button>
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <p className="text-gray-500 text-sm italic">暂无总结提示词</p>
+                            )}
                         </div>
-                    ))}
+                    </div>
+
+                    {/* 阶段2：JSON生成提示词 */}
+                    <div>
+                        <h3 className="text-lg font-medium text-gray-700 mb-4 pb-2 border-b border-gray-100">
+                            🔧 阶段2：JSON生成提示词（用于生成结构化输出）
+                        </h3>
+                        <div className="space-y-4 pl-4">
+                            {prompts.filter(p => p.type === 'json').length > 0 ? (
+                                prompts.filter(p => p.type === 'json').map((prompt, index) => (
+                                    <div key={prompt.id} className="py-4 border-l-2 border-[#B8860B]/30 pl-4">
+                                        <div className="flex items-center mb-2">
+                                            <h4 className="font-medium text-gray-800">{prompt.title}</h4>
+                                            {prompt.isDefault && (
+                                                <span className="ml-3 text-[#B8860B] border border-[#B8860B]/50 text-xs font-medium px-2 py-0.5 rounded-full">默认</span>
+                                            )}
+                                        </div>
+                                        {prompt.description && (
+                                            <p className="text-xs text-gray-500 mb-2">{prompt.description}</p>
+                                        )}
+                                        <p className="text-gray-600 text-sm mb-3 leading-relaxed">{prompt.content}</p>
+                                        <div className="flex items-center space-x-3 text-sm font-medium">
+                                            {!prompt.isDefault && (
+                                                <>
+                                                    <button onClick={() => handleSetDefault(prompt.id)} className="text-gray-600 hover:text-[#B8860B] transition-colors">设为默认</button>
+                                                    <span className="text-gray-300">|</span>
+                                                </>
+                                            )}
+                                            <button className="text-gray-600 hover:text-[#B8860B] transition-colors">编辑</button>
+                                            <span className="text-gray-300">|</span>
+                                            <button onClick={() => handleDelete(prompt.id)} className="text-red-500 hover:text-red-700 transition-colors">删除</button>
+                                        </div>
+                                    </div>
+                                ))
+                            ) : (
+                                <p className="text-gray-500 text-sm italic">暂无JSON生成提示词</p>
+                            )}
+                        </div>
+                    </div>
                 </div>
             </motion.div>
         </div>

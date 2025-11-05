@@ -2,16 +2,24 @@ export enum Page {
   Home,
   History,
   Settings,
+  PromptManager,
 }
 
 export interface AnalysisResult {
-  id: number;
+  id: string;
   timestamp: string;
   title: string;
   summary: string;
-  thumbnailUrl: string;
-  videoUrl: string;
+  thumbnailUrl?: string;
+  videoUrl?: string;
   tags: string[];
+  // 扩展字段：用于存储原始分析数据
+  keyFindings?: { point: string; evidence?: string[] }[];
+  productivityScore?: number; // 0-100
+  nextActions?: string[];
+  // 记录使用的自定义提示词
+  customPromptUsed?: string;
+  customPromptId?: number;
 }
 
 export interface CustomPrompt {
@@ -19,6 +27,20 @@ export interface CustomPrompt {
   title: string;
   content: string;
   isDefault: boolean;
+  description?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ProxySettings {
+  enabled: boolean;
+  url: string;
+}
+
+export interface AppSettings {
+  networking: {
+    proxy: ProxySettings;
+  };
 }
 
 

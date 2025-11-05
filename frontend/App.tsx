@@ -1,34 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AnimatePresence } from 'framer-motion';
-import { Page, AnalysisResult, CustomPrompt } from './types';
-import { MOCK_ANALYSIS_RESULTS, MOCK_CUSTOM_PROMPTS, AI_MODELS } from './constants';
+import { Page, AnalysisResult } from './types';
+import { MOCK_ANALYSIS_RESULTS, AI_MODELS } from './constants';
 import Navigation from './components/Navigation';
 import HomePage from './components/HomePage';
 import GalleryPage from './components/GalleryPage';
 import ProjectDetailPage from './components/ProjectDetailPage';
 import SettingsPage from './components/SettingsPage';
+import PromptManager from './src/components/PromptManager';
 import recordingService from './src/services/recordingService';
-import { startAnalysis } from './src/services/apiService';
+import { startAnalysis, generateAiSummary } from './src/services/apiService';
 import { useSummary } from './src/stores/summaryStore';
+import { PromptProvider, usePromptStore } from './src/stores/promptStore';
 
-const App: React.FC = () => {
+// Internal App component that uses the prompt store
+const AppContent: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<Page>(Page.Home);
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisResult[]>(MOCK_ANALYSIS_RESULTS);
   const [selectedAnalysis, setSelectedAnalysis] = useState<AnalysisResult | null>(null);
   const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'processing'>('idle');
   const [selectedModel, setSelectedModel] = useState<string>(AI_MODELS[0].id);
+  useEffect(() => {
+    const savedModel = localStorage.getItem('gemini_model');
+    if (savedModel) {
+      setSelectedModel(savedModel);
+    }
+  }, []);
   const { setSummary } = useSummary();
-
-  // Lifted state for prompts
-  const [prompts, setPrompts] = useState<CustomPrompt[]>(MOCK_CUSTOM_PROMPTS);
-  const [selectedPromptId, setSelectedPromptId] = useState<number | null>(() => {
-    return prompts.find((p: CustomPrompt) => p.isDefault)?.id ?? prompts[0]?.id ?? null;
-  });
-
-  const handleSetDefaultPrompt = (id: number) => {
-    const newPrompts = prompts.map((p: CustomPrompt) => ({ ...p, isDefault: p.id === id }));
-    setPrompts(newPrompts);
-  };
+  const { prompts, activePromptId, setActivePrompt, getActivePrompt } = usePromptStore();
 
   const handleSelectAnalysis = (analysis: AnalysisResult) => {
     setSelectedAnalysis(analysis);
@@ -37,7 +36,7 @@ const App: React.FC = () => {
   const handleCloseAnalysis = () => {
     setSelectedAnalysis(null);
   };
-  
+
   const handleStartRecording = async () => {
     if (recordingState !== 'idle') return;
 
@@ -60,21 +59,47 @@ const App: React.FC = () => {
       await recordingService.stop();
       const recordedChunks = recordingService.getRecordedChunks();
       console.log(`[App] Recording stopped. Uploaded ${recordedChunks.length} chunks`);
-      
-      console.log('[App] Starting analysis...');
-  const result = await startAnalysis({ modelName: selectedModel });
-      console.log('[App] Analysis Result:', result);
-      setSummary(result.observations, result.activityCards);
 
-      const selectedPrompt = prompts.find((p: CustomPrompt) => p.id === selectedPromptId);
+      console.log('[App] Starting basic analysis...');
+      const basicResult = await startAnalysis({ modelName: selectedModel });
+      console.log('[App] Basic analysis Result:', basicResult);
+      setSummary(basicResult.observations, basicResult.activityCards);
+
+      // 获取当前选中的提示词
+      const activePrompt = getActivePrompt();
+      if (!activePrompt) {
+        throw new Error('No prompt selected');
+      }
+
+      console.log('[App] Generating AI summary with prompt:', activePrompt.title);
+
+      // 调用两阶段AI总结生成
+      const aiSummaryResult = await generateAiSummary({
+        stage1SystemPrompt: undefined, // 使用默认的阶段1系统提示词
+        customSummaryPrompt: activePrompt.content,
+        customJsonPrompt: '请生成结构化的分析报告，包含标题、总结、标签、关键发现、生产力评分和后续行动建议。',
+        activityCards: basicResult.activityCards,
+        observations: basicResult.observations,
+        videoMeta: { durationSec: 0 }, // 可以后续完善
+        modelName: selectedModel,
+      });
+
+      console.log('[App] AI summary generated:', aiSummaryResult);
+
+      // 创建分析历史记录
       const newAnalysis: AnalysisResult = {
-        id: Date.now(),
+        id: Date.now().toString(),
         timestamp: new Date().toLocaleString('zh-CN'),
-        title: selectedPrompt ? `${selectedPrompt.title} 分析` : '新录制的分析',
-        summary: result.observations.map(o => o.description).join(' ') || '分析完成',
+        title: aiSummaryResult.title || `${activePrompt.title} 分析`,
+        summary: aiSummaryResult.summary || 'AI分析完成',
         thumbnailUrl: `https://picsum.photos/seed/${Date.now()}/800/600`,
-        videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4', // Placeholder
-        tags: selectedPrompt ? [selectedPrompt.title, '自动生成'] : ['新录制', '自动生成'],
+        videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+        tags: aiSummaryResult.tags || [activePrompt.title, 'AI生成'],
+        keyFindings: aiSummaryResult.keyFindings,
+        productivityScore: aiSummaryResult.productivityScore,
+        nextActions: aiSummaryResult.nextActions,
+        customPromptUsed: activePrompt.content,
+        customPromptId: activePrompt.id,
       };
 
       setAnalysisHistory((prev: AnalysisResult[]) => [newAnalysis, ...prev]);
@@ -87,40 +112,50 @@ const App: React.FC = () => {
     }
   };
 
-
   const renderPage = () => {
     switch (currentPage) {
       case Page.Home:
-        return <HomePage 
-                  key="home" 
-                  onStart={handleStartRecording}
-                  onStop={handleStopRecording}
-                  recordingState={recordingState} 
-                  prompts={prompts}
-                  selectedPromptId={selectedPromptId}
-                  onSelectPrompt={setSelectedPromptId}
-                />;
+        return (
+          <HomePage
+            key="home"
+            onStart={handleStartRecording}
+            onStop={handleStopRecording}
+            recordingState={recordingState}
+            prompts={prompts}
+            selectedPromptId={activePromptId}
+            onSelectPrompt={setActivePrompt}
+          />
+        );
       case Page.History:
-        return <GalleryPage key="history" analyses={analysisHistory} onAnalysisClick={handleSelectAnalysis} />;
+        return (
+          <GalleryPage
+            key="history"
+            analyses={analysisHistory}
+            onAnalysisClick={handleSelectAnalysis}
+          />
+        );
       case Page.Settings:
-        return <SettingsPage 
-                  key="settings" 
-                  prompts={prompts}
-                  onSetPrompts={setPrompts}
-                  onSetDefaultPrompt={handleSetDefaultPrompt}
-                  selectedModel={selectedModel}
-                  onSelectModel={setSelectedModel}
-                />;
+        return (
+          <SettingsPage
+            key="settings"
+            selectedModel={selectedModel}
+            onSelectModel={setSelectedModel}
+          />
+        );
+      case Page.PromptManager:
+        return <PromptManager key="prompt-manager" />;
       default:
-        return <HomePage 
-                  key="home" 
-                  onStart={handleStartRecording}
-                  onStop={handleStopRecording}
-                  recordingState={recordingState} 
-                  prompts={prompts}
-                  selectedPromptId={selectedPromptId}
-                  onSelectPrompt={setSelectedPromptId}
-                />;
+        return (
+          <HomePage
+            key="home"
+            onStart={handleStartRecording}
+            onStop={handleStopRecording}
+            recordingState={recordingState}
+            prompts={prompts}
+            selectedPromptId={activePromptId}
+            onSelectPrompt={setActivePrompt}
+          />
+        );
     }
   };
 
@@ -130,10 +165,10 @@ const App: React.FC = () => {
       <main>
         <AnimatePresence mode="wait">
           {selectedAnalysis ? (
-            <ProjectDetailPage 
+            <ProjectDetailPage
               key="project-detail"
-              analysis={selectedAnalysis} 
-              onClose={handleCloseAnalysis} 
+              analysis={selectedAnalysis}
+              onClose={handleCloseAnalysis}
             />
           ) : (
             renderPage()
@@ -141,6 +176,15 @@ const App: React.FC = () => {
         </AnimatePresence>
       </main>
     </div>
+  );
+};
+
+// Main App component with PromptProvider
+const App: React.FC = () => {
+  return (
+    <PromptProvider>
+      <AppContent />
+    </PromptProvider>
   );
 };
 

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { uploadChunk, triggerAnalysis } from '../controllers/analysisController';
+import { uploadChunk, triggerAnalysis, generateAiSummary } from '../controllers/analysisController';
 import { upload } from '../utils/multerConfig';
 
 const router = Router();
@@ -10,5 +10,10 @@ router.post('/upload', upload.single('chunk'), uploadChunk);
 
 // POST /api/analysis/analyze
 router.post('/analyze', triggerAnalysis);
+
+// POST /api/analysis/ai-summary
+// 生成AI总结（两阶段提示词工程）
+// Body: { customSummaryPrompt, customJsonPrompt, activityCards, observations, videoMeta, modelName, apiKey }
+router.post('/ai-summary', generateAiSummary);
 
 export default router;

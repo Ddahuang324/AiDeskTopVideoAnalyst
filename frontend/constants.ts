@@ -1,61 +1,8 @@
 import { AnalysisResult, LayoutConfig, GalleryItemType, CustomPrompt } from './types';
 
-export const MOCK_ANALYSIS_RESULTS: AnalysisResult[] = [
-  {
-    id: 1,
-    timestamp: '2023年10月27日, 14:30',
-    title: 'Q4产品路线图规划会议',
-    summary: '会议确定了第四季度的主要产品方向，重点关注用户体验优化和AI功能集成。讨论了三个核心特性，并分配了初步的开发资源。',
-    thumbnailUrl: 'https://images.unsplash.com/photo-1556761175-5973dc0f32e7?q=80&w=2232&auto=format&fit=crop',
-    videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
-    tags: ['会议纪要', '产品规划', 'Q4', 'AI'],
-  },
-  {
-    id: 2,
-    timestamp: '2023年10月26日, 10:00',
-    title: '竞争对手UX分析',
-    summary: '对主要竞争对手App "InnovateNow" 的用户体验进行了深入分析。其优点在于流畅的引导流程，但导航结构混乱，存在改进空间。',
-    thumbnailUrl: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=2070&auto=format&fit=crop',
-    videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-    tags: ['UX分析', '竞品分析', '用户体验'],
-  },
-  {
-    id: 3,
-    timestamp: '2023年10月25日, 16:15',
-    title: '新功能设计评审',
-    summary: '评审了“智能标签”功能的设计原型。视觉设计获得一致好评，但交互逻辑需要简化，减少用户操作步骤。',
-    thumbnailUrl: 'https://images.unsplash.com/photo-1581291518857-4e27b48ff24e?q=80&w=2070&auto=format&fit=crop',
-    videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-    tags: ['设计评审', '原型', 'UX/UI'],
-  },
-  {
-    id: 4,
-    timestamp: '2023年10月24日, 11:00',
-    title: '代码重构技术研讨',
-    summary: '探讨了重构旧版认证模块的几种方案。最终决定采用微服务架构，以提高系统的可维护性和扩展性。',
-    thumbnailUrl: 'https://images.unsplash.com/photo-1542831371-29b0f74f9713?q=80&w=2070&auto=format&fit=crop',
-    videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4',
-    tags: ['技术研讨', '代码重构', '架构'],
-  },
-   {
-    id: 5,
-    timestamp: '2023年10月23日, 09:30',
-    title: '用户反馈整理与分析',
-    summary: '整理了上周收集的用户反馈。多数用户希望增加自定义主题功能，并报告了在特定设备上的性能问题。',
-    thumbnailUrl: 'https://images.unsplash.com/photo-1557804506-669a67965ba0?q=80&w=1974&auto=format&fit=crop',
-    videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4',
-    tags: ['用户反馈', '数据分析', '产品改进'],
-  },
-   {
-    id: 6,
-    timestamp: '2023年10月22日, 15:00',
-    title: '市场营销活动复盘',
-    summary: '复盘了“金秋推广”活动的数据。活动整体ROI超出预期20%，社交媒体渠道的转化率最高。',
-    thumbnailUrl: 'https://images.unsplash.com/photo-1520607162502-ac4c142b120a?q=80&w=2070&auto=format&fit=crop',
-    videoUrl: 'https://storage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackOnStreetAndDirt.mp4',
-    tags: ['市场营销', '数据复盘', '推广活动'],
-  }
-];
+// ✅ 分析历史完全动态生成，初始为空
+// 只有用户通过"AI总结"功能生成的分析结果才会显示在这里
+export const MOCK_ANALYSIS_RESULTS: AnalysisResult[] = [];
 
 export const AI_MODELS = [
   { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite (最快最经济)' },
@@ -63,27 +10,9 @@ export const AI_MODELS = [
   { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (最高质量)' },
 ];
 
-export const MOCK_CUSTOM_PROMPTS: CustomPrompt[] = [
-  {
-    id: 1,
-    title: '默认总结',
-    content: '总结我的工作流',
-    isDefault: true,
-  },
-  {
-    id: 2,
-    title: '详细报告',
-    content: '生成详细的工作报告，包括时间分配和关键活动',
-    isDefault: false,
-  },
-  {
-    id: 3,
-    title: '会议纪要',
-    content: '将录制内容整理成一份正式的会议纪要，包含议题、决策和待办事项。',
-    isDefault: false,
-  }
-];
-
+// ✅ 自定义提示词初始为空，完全由用户在前端创建和修改
+// 这些是"二阶提示词"，用于影响AI总结的内容和风格
+export const MOCK_CUSTOM_PROMPTS: CustomPrompt[] = [];
 
 // FIX: Add GALLERY_LAYOUTS constant to define gallery grid layouts.
 export const GALLERY_LAYOUTS: LayoutConfig[][] = [
