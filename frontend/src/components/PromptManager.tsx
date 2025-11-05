@@ -19,6 +19,7 @@ const PromptManager: React.FC = () => {
     title: '',
     content: '',
     description: '',
+    type: 'summary' as 'summary' | 'json',
   });
 
   const resetForm = () => {
@@ -26,6 +27,7 @@ const PromptManager: React.FC = () => {
       title: '',
       content: '',
       description: '',
+      type: 'summary',
     });
     setEditingPrompt(null);
   };
@@ -37,11 +39,11 @@ const PromptManager: React.FC = () => {
         title: prompt.title,
         content: prompt.content,
         description: prompt.description || '',
+        type: prompt.type,
       });
     } else {
-      resetForm();
+      setIsModalOpen(true);
     }
-    setIsModalOpen(true);
   };
 
   const closeModal = () => {
@@ -67,6 +69,7 @@ const PromptManager: React.FC = () => {
         content: formData.content.trim(),
         description: formData.description.trim(),
         isDefault: false,
+        type: formData.type,
       });
     }
 
@@ -253,6 +256,20 @@ const PromptManager: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#B8860B] focus:border-transparent"
                     placeholder="简要描述这个提示词的用途"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-[#222222] mb-1">
+                    提示词类型 <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={formData.type}
+                    onChange={(e) => setFormData({ ...formData, type: e.target.value as 'summary' | 'json' })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#B8860B] focus:border-transparent"
+                  >
+                    <option value="summary">总结提示词（用于生成初步总结笔记）</option>
+                    <option value="json">JSON生成提示词（用于生成结构化输出）</option>
+                  </select>
                 </div>
 
                 <div>

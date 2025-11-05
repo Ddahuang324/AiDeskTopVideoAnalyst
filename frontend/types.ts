@@ -27,6 +27,7 @@ export interface CustomPrompt {
   title: string;
   content: string;
   isDefault: boolean;
+  type: 'summary' | 'json';
   description?: string;
   createdAt?: string;
   updatedAt?: string;
