@@ -1,22 +1,49 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
+// Server-side File Manager for uploading large media files
+// Ref: https://github.com/google/generative-ai-js
+import { GoogleAIFileManager } from "@google/generative-ai/server";
 import type { Schema } from "@google/generative-ai";
 import path from "path";
 import fs from "fs";
+// Optional proxy support for restricted networks
+import { ProxyAgent, setGlobalDispatcher } from "undici";
+import {
+	GeminiModel,
+	DEFAULT_TRANSCRIPTION_PREFERENCE,
+	DEFAULT_SUMMARIZATION_PREFERENCE,
+	GENERATION_CONFIGS,
+	getOrderedModels,
+	GEMINI_MODELS
+} from "../config/geminiConfig";
+
+// Configure proxy if provided
+const proxyUrl = process.env.GEMINI_HTTP_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+if (proxyUrl) {
+	try {
+		setGlobalDispatcher(new ProxyAgent(proxyUrl));
+		console.log(`[Gemini] Using proxy for outbound requests: ${proxyUrl}`);
+	} catch (e) {
+		console.warn("[Gemini] Failed to configure proxy agent:", e);
+	}
+}
 
 const apiKey = process.env.GEMINI_API_KEY || "";
+if (!apiKey) {
+	console.warn("[Gemini] GEMINI_API_KEY is not set. Requests will fail until a valid key is provided.");
+}
 const genAI = new GoogleGenerativeAI(apiKey);
 
-// For newer versions of the SDK, file manager might be accessed differently
-// We'll create a helper function to get the file manager
-let fileManager: any = null;
+// Capacity error codes that should trigger model fallback
+const CAPACITY_ERROR_CODES = new Set([403, 429, 503]);
 
+// Initialize File Manager if available (Node/server-only)
+let fileManager: GoogleAIFileManager | null = null;
 try {
-  // Try to get file manager if available
-  if ((genAI as any).getFileManager) {
-    fileManager = (genAI as any).getFileManager();
-  }
+	if (apiKey) {
+		fileManager = new GoogleAIFileManager(apiKey);
+	}
 } catch (error) {
-  console.warn('Could not initialize file manager:', error);
+	console.warn("[Gemini] Could not initialize GoogleAIFileManager, will try fallbacks:", error);
 }
 
 export interface Observation {
@@ -52,6 +79,186 @@ export interface ActivityCard {
 const stripMarkdownFence = (payload: string): string =>
 	payload.replace(/```json\s*|```/g, "").trim();
 
+const GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com";
+const VIDEO_MIME_TYPE = "video/mp4";
+const FILE_POLL_INTERVAL_MS = 1500;
+const FILE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
+
+interface GeminiFile {
+	name: string;
+	uri?: string;
+	state?: string;
+	error?: { message?: string };
+}
+
+interface GeminiFileResponse {
+	file: GeminiFile;
+}
+
+const sleep = (ms: number): Promise<void> =>
+	new Promise(resolve => setTimeout(resolve, ms));
+
+const appendApiKey = (url: string): string => {
+	if (!apiKey) {
+		throw new Error("GEMINI_API_KEY is required to call Gemini APIs.");
+	}
+	return url.includes("?") ? `${url}&key=${apiKey}` : `${url}?key=${apiKey}`;
+};
+
+const isNetworkError = (error: unknown): boolean => {
+	if (error instanceof Error) {
+		return /fetch failed|ENOTFOUND|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ECONNREFUSED/i.test(error.message);
+	}
+	return false;
+};
+
+const waitForGeminiFileActive = async (
+	fileName: string,
+	manager?: GoogleAIFileManager | null,
+): Promise<GeminiFile> => {
+	const deadline = Date.now() + FILE_POLL_TIMEOUT_MS;
+	let lastState: string | undefined;
+
+	while (Date.now() < deadline) {
+		try {
+			let file: GeminiFile | null = null;
+			if (manager) {
+				file = (await manager.getFile(fileName)) as GeminiFile;
+			} else {
+				const statusUrl = appendApiKey(`${GEMINI_API_BASE_URL}/v1beta/${fileName}`);
+				const response = await fetch(statusUrl);
+				if (!response.ok) {
+					const body = await response.text();
+					throw new Error(`Gemini file status error (${response.status}): ${body || response.statusText}`);
+				}
+				file = (await response.json()) as GeminiFile;
+			}
+
+			if (!file) {
+				throw new Error("Gemini file status response was empty.");
+			}
+
+			if (file.state === "ACTIVE" && file.uri) {
+				return file;
+			}
+
+			if (file.state === "FAILED") {
+				const reason = file.error?.message || "Unknown error.";
+				throw new Error(`Gemini file processing failed: ${reason}`);
+			}
+
+			if (file.state && file.state !== lastState) {
+				console.log(`[Gemini] File ${fileName} state: ${file.state}`);
+				lastState = file.state;
+			}
+		} catch (statusError) {
+			throw statusError;
+		}
+
+		await sleep(FILE_POLL_INTERVAL_MS);
+	}
+
+	throw new Error(`Timed out waiting for Gemini file ${fileName} to become ACTIVE.`);
+};
+
+const initiateResumableUpload = async (displayName: string): Promise<string> => {
+	const initUrl = appendApiKey(`${GEMINI_API_BASE_URL}/upload/v1beta/files`);
+	const metadata = {
+		file: {
+			display_name: displayName,
+			mime_type: VIDEO_MIME_TYPE,
+		},
+	};
+
+	const response = await fetch(initUrl, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			"X-Goog-Upload-Command": "start",
+			"X-Goog-Upload-Protocol": "resumable",
+		},
+		body: JSON.stringify(metadata),
+	});
+
+	if (!response.ok) {
+		const body = await response.text();
+		throw new Error(`Failed to initiate resumable upload (${response.status}): ${body || response.statusText}`);
+	}
+
+	const uploadUrl = response.headers.get("x-goog-upload-url");
+	if (!uploadUrl) {
+		throw new Error("Gemini resumable upload did not return an upload URL.");
+	}
+
+	return uploadUrl;
+};
+
+const completeResumableUpload = async (uploadUrl: string, filePath: string): Promise<GeminiFile> => {
+	const stats = fs.statSync(filePath);
+	const fileStream = fs.createReadStream(filePath);
+
+	const uploadInit: RequestInit = {
+		method: "POST",
+		headers: {
+			"Content-Length": stats.size.toString(),
+			"Content-Type": VIDEO_MIME_TYPE,
+			"X-Goog-Upload-Command": "upload, finalize",
+			"X-Goog-Upload-Offset": "0",
+		},
+		body: fileStream as any,
+	};
+
+	// Required by Undici when streaming a request body
+	Reflect.set(uploadInit, "duplex", "half");
+
+	const response = await fetch(uploadUrl, uploadInit);
+
+	if (!response.ok) {
+		const body = await response.text();
+		throw new Error(`Gemini resumable upload failed (${response.status}): ${body || response.statusText}`);
+	}
+
+	const payload = (await response.json()) as GeminiFileResponse;
+	if (!payload?.file?.name) {
+		throw new Error("Gemini resumable upload succeeded but returned no file metadata.");
+	}
+
+	return payload.file;
+};
+
+const uploadVideoWithResumable = async (filePath: string, displayName: string): Promise<string> => {
+	console.log("[Gemini] Using manual resumable upload flow.");
+	const uploadUrl = await initiateResumableUpload(displayName);
+	const uploadedFile = await completeResumableUpload(uploadUrl, filePath);
+	const activeFile = await waitForGeminiFileActive(uploadedFile.name, null);
+	if (!activeFile.uri) {
+		throw new Error("Gemini file became ACTIVE but no URI was returned.");
+	}
+	console.log(`[Gemini] Resumable upload successful. File URI: ${activeFile.uri}`);
+	return activeFile.uri;
+};
+
+const uploadVideoWithFileManager = async (filePath: string, displayName: string, manager: GoogleAIFileManager): Promise<string> => {
+	console.log("[Gemini] Uploading via GoogleAIFileManager.");
+	const uploadResponse = await manager.uploadFile(filePath, {
+		mimeType: VIDEO_MIME_TYPE,
+		displayName,
+	});
+
+	const fileName = uploadResponse?.file?.name;
+	if (!fileName) {
+		throw new Error("GoogleAIFileManager returned no file name.");
+	}
+
+	const activeFile = await waitForGeminiFileActive(fileName, manager);
+	if (!activeFile.uri) {
+		throw new Error("Gemini file became ACTIVE but provided no URI.");
+	}
+
+	console.log(`[Gemini] Upload successful. File URI: ${activeFile.uri}`);
+	return activeFile.uri;
+};
+
 /**
  * Uploads a video file to the Gemini File API.
  * @param {string} filePath The path to the video file to upload.
@@ -59,36 +266,44 @@ const stripMarkdownFence = (payload: string): string =>
  */
 export const uploadVideo = async (filePath: string): Promise<string> => {
 	console.log(`Uploading video: ${filePath}`);
+
+	if (!fs.existsSync(filePath)) {
+		throw new Error(`Video file not found: ${filePath}`);
+	}
+
+	if (!apiKey) {
+		throw new Error("GEMINI_API_KEY is not configured. Set it in your environment to use Gemini uploads.");
+	}
+
+	const displayName = `workflow-video-${path.basename(filePath)}`;
+	let fileManagerError: unknown = null;
+
+	if (fileManager) {
+		try {
+			return await uploadVideoWithFileManager(filePath, displayName, fileManager);
+		} catch (error) {
+			fileManagerError = error;
+			console.error("[Gemini] File manager upload failed, falling back to manual resumable flow:", error);
+		}
+	} else {
+		console.warn("[Gemini] GoogleAIFileManager unavailable. Falling back to manual resumable upload.");
+	}
+
 	try {
-		// Check if file exists
-		if (!fs.existsSync(filePath)) {
-			throw new Error(`Video file not found: ${filePath}`);
+		return await uploadVideoWithResumable(filePath, displayName);
+	} catch (fallbackError) {
+		console.error("[Gemini] Resumable upload failed:", fallbackError);
+		const messages: string[] = [];
+		messages.push(fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+		if (fileManagerError instanceof Error) {
+			messages.push(`File manager error: ${fileManagerError.message}`);
 		}
-
-		// Read the video file
-		const videoData = fs.readFileSync(filePath);
-
-		// Use the file manager if available, otherwise use direct API call
-		if (fileManager && fileManager.uploadFile) {
-			const response = await fileManager.uploadFile(filePath, {
-				mimeType: "video/mp4",
-				displayName: `workflow-video-${path.basename(filePath)}`,
-			});
-			console.log(`Upload successful. File URI: ${response.file.uri}`);
-			return response.file.uri;
-		} else {
-			// Fallback: Use the model's generateContent with video data
-			// For now, we'll just create a mock URI or throw an error
-			console.warn('File manager not available, attempting alternative upload method');
-			
-			// For testing purposes, return a mock URI that can be used in transcription
-			const mockUri = `file://${filePath}`;
-			console.log(`Using local file URI: ${mockUri}`);
-			return mockUri;
+		if (isNetworkError(fallbackError) || isNetworkError(fileManagerError)) {
+			messages.push(
+				"Network error detected. Ensure outbound HTTPS access to generativelanguage.googleapis.com or configure GEMINI_HTTP_PROXY/HTTPS_PROXY."
+			);
 		}
-	} catch (error) {
-		console.error("Error uploading video to Gemini:", error);
-		throw new Error("Failed to upload video file.");
+		throw new Error(`Failed to upload video to Gemini. ${messages.join(" | ")}`);
 	}
 };
 
@@ -96,11 +311,13 @@ export const uploadVideo = async (filePath: string): Promise<string> => {
  * Transcribes a video into a series of timestamped observations using a detailed prompt.
  * @param {string} fileUri The URI of the uploaded video file.
  * @param {number} videoDuration The duration of the video in seconds.
+ * @param {GeminiModel} userSelectedModel The model selected by the user in the frontend.
  * @returns {Promise<any>} A promise that resolves with the parsed JSON array of observations.
  */
 export const transcribeVideo = async (
 	fileUri: string,
 	videoDuration: number,
+	userSelectedModel?: GeminiModel,
 ): Promise<Observation[]> => {
 	const durationMinutes = Math.floor(videoDuration / 60);
 	const durationSeconds = Math.round(videoDuration % 60);
@@ -147,59 +364,132 @@ Remember: The goal is to tell the story of what someone accomplished, not log ev
 `;
 
 	console.log("Starting video transcription with Gemini...");
-	const transcriptionSchema: Schema = {
-		type: SchemaType.ARRAY,
-		items: {
-			type: SchemaType.OBJECT,
-			properties: {
-				startTimestamp: { type: SchemaType.STRING },
-				endTimestamp: { type: SchemaType.STRING },
-				description: { type: SchemaType.STRING },
-			},
-			required: ["startTimestamp", "endTimestamp", "description"],
-		},
-	};
-
-	const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-	try {
-		const result = await model.generateContent({
-			contents: [
-				{
-					role: "user",
-					parts: [
-						{ fileData: { mimeType: "video/mp4", fileUri } },
-						{ text: prompt },
-					],
-				},
-			],
-			generationConfig: {
-				temperature: 0.3,
-				maxOutputTokens: 8192,
-				responseMimeType: "application/json",
-				responseSchema: transcriptionSchema,
-			},
-		});
-
-		const responseText = result.response.text();
-		const jsonString = stripMarkdownFence(responseText);
-		const parsed = JSON.parse(jsonString) as Observation[];
-
-		console.log("Transcription received from Gemini.");
-		return parsed;
-	} catch (error) {
-		console.error("Error transcribing video with Gemini:", error);
-		throw new Error("Failed to transcribe video.");
+	
+	// Use user-selected model or fallback to default preference
+	let orderedModels: GeminiModel[];
+	if (userSelectedModel) {
+		// User selected a specific model - use it with standard fallbacks
+		console.log(`🎯 User selected model: ${GEMINI_MODELS[userSelectedModel].displayName}`);
+		orderedModels = [
+			userSelectedModel,
+			// Add fallbacks in order of capability
+			...[GeminiModel.FLASH, GeminiModel.FLASH_LITE, GeminiModel.PRO].filter(m => m !== userSelectedModel)
+		];
+	} else {
+		// No user preference, use default configuration
+		orderedModels = getOrderedModels(DEFAULT_TRANSCRIPTION_PREFERENCE);
 	}
+	
+	let lastError: Error | null = null;
+	
+	// Try models in order with fallback
+	for (const modelName of orderedModels) {
+		try {
+			console.log(`Attempting transcription with model: ${GEMINI_MODELS[modelName].displayName}`);
+
+			const transcriptionSchema: Schema = {
+				type: SchemaType.ARRAY,
+				items: {
+					type: SchemaType.OBJECT,
+					properties: {
+						startTimestamp: { type: SchemaType.STRING },
+						endTimestamp: { type: SchemaType.STRING },
+						description: { type: SchemaType.STRING },
+					},
+					required: ["startTimestamp", "endTimestamp", "description"],
+				},
+			};
+
+			const model = genAI.getGenerativeModel({ model: modelName });
+
+			if (!fileUri || (!fileUri.startsWith("https://") && !fileUri.startsWith("gs://"))) {
+				throw new Error(
+					`Invalid Gemini file URI: ${fileUri}. Expected the upload step to return a hosted URI from generativelanguage.googleapis.com.`
+				);
+			}
+
+			const parts = [
+				{ fileData: { mimeType: VIDEO_MIME_TYPE, fileUri } },
+				{ text: prompt },
+			];
+
+			const result = await model.generateContent({
+				contents: [
+					{
+						role: "user",
+						parts,
+					},
+				],
+				generationConfig: {
+					...GENERATION_CONFIGS.transcription,
+					responseSchema: transcriptionSchema,
+				},
+			});
+
+			const responseText = result.response.text();
+			const jsonString = stripMarkdownFence(responseText);
+			const parsed = JSON.parse(jsonString) as Observation[];
+
+			console.log(`✅ Transcription successful with ${GEMINI_MODELS[modelName].displayName}`);
+			return parsed;
+			
+		} catch (error: any) {
+			// Preserve last error for final reporting
+			lastError = error;
+
+			// Detailed diagnostic logging to aid troubleshooting
+			console.error("Error calling Gemini API:", error);
+			if (error.response && error.response.status) {
+				console.error(`Gemini API HTTP Status: ${error.response.status}`);
+			}
+			if (error.message) {
+				console.error(`Gemini API Error Message: ${error.message}`);
+			}
+			if (error.result && error.result.response && error.result.response.candidates === undefined) {
+				console.error("Gemini API response did not contain candidates, possibly an error from the API.");
+				try {
+					console.error("Full Gemini API error response (if available):", JSON.stringify(error.result.response, null, 2));
+				} catch (e) {
+					// ignore JSON stringify errors
+				}
+			}
+
+			const msg = error?.message || String(error);
+			console.error(`❌ Error with ${GEMINI_MODELS[modelName].displayName}:`, msg);
+
+			// More helpful diagnostics for network issues often seen in restricted networks
+			if (msg.includes("fetch failed") || /ENOTFOUND|ECONNRESET|ETIMEDOUT/i.test(msg)) {
+				console.error(
+					"Network error reaching generativelanguage.googleapis.com. If you're in a restricted network, set GEMINI_HTTP_PROXY/HTTPS_PROXY, try a VPN/proxy, or use Vertex AI with regional endpoints."
+				);
+			}
+
+			// Check if we should try fallback model
+			const isCapacityError = error.status && CAPACITY_ERROR_CODES.has(error.status);
+			const isLastModel = modelName === orderedModels[orderedModels.length - 1];
+
+			if (!isCapacityError || isLastModel) {
+				// If it's not a capacity error, or this is the last model, break to throw final error
+				break;
+			}
+
+			console.log(`↘️ Falling back to next model...`);
+		}
+	}
+	
+	// All models failed
+	throw new Error(`Failed to transcribe video after trying all models: ${lastError?.message || "Unknown error"}`);
 };
 
 /**
  * Generates higher-level activity cards from the list of observations.
  * @param {Observation[]} observations The observations returned by the transcription step.
+ * @param {GeminiModel} userSelectedModel The model selected by the user in the frontend.
  * @returns {Promise<ActivityCard[]>} Structured activity cards ready for the frontend.
  */
 export const generateActivityCards = async (
 	observations: Observation[],
+	userSelectedModel?: GeminiModel,
 ): Promise<ActivityCard[]> => {
 	if (!observations.length) {
 		throw new Error("No observations provided for activity card generation.");
@@ -313,33 +603,68 @@ Return ONLY a JSON array with this EXACT structure:
 		},
 	};
 
-	const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-
-	try {
-		const result = await model.generateContent({
-			contents: [
-				{
-					role: "user",
-					parts: [{ text: prompt }],
-				},
-			],
-			generationConfig: {
-				temperature: 0.25,
-				maxOutputTokens: 8192,
-				responseMimeType: "application/json",
-				responseSchema: cardSchema,
-			},
-		});
-
-		const responseText = result.response.text();
-		const jsonString = stripMarkdownFence(responseText);
-		const parsed = JSON.parse(jsonString) as ActivityCard[];
-
-		console.log("Activity cards generated.");
-		return parsed;
-	} catch (error) {
-		console.error("Error generating activity cards with Gemini:", error);
-		throw new Error("Failed to generate activity cards.");
+	// Use user-selected model or fallback to default preference
+	let orderedModels: GeminiModel[];
+	if (userSelectedModel) {
+		// User selected a specific model - use it with standard fallbacks
+		console.log(`🎯 User selected model: ${GEMINI_MODELS[userSelectedModel].displayName}`);
+		orderedModels = [
+			userSelectedModel,
+			// Add fallbacks in order of capability
+			...[GeminiModel.FLASH, GeminiModel.FLASH_LITE, GeminiModel.PRO].filter(m => m !== userSelectedModel)
+		];
+	} else {
+		// No user preference, use default configuration
+		orderedModels = getOrderedModels(DEFAULT_SUMMARIZATION_PREFERENCE);
 	}
+	
+	let lastError: Error | null = null;
+	
+	// Try models in order with fallback
+	for (const modelName of orderedModels) {
+		try {
+			console.log(`Generating activity cards with model: ${GEMINI_MODELS[modelName].displayName}`);
+			
+			const model = genAI.getGenerativeModel({ model: modelName });
+
+			const result = await model.generateContent({
+				contents: [
+					{
+						role: "user",
+						parts: [{ text: prompt }],
+					},
+				],
+				generationConfig: {
+					...GENERATION_CONFIGS.summarization,
+					responseSchema: cardSchema,
+				},
+			});
+
+			const responseText = result.response.text();
+			const jsonString = stripMarkdownFence(responseText);
+			const parsed = JSON.parse(jsonString) as ActivityCard[];
+
+			console.log(`✅ Activity cards generated successfully with ${GEMINI_MODELS[modelName].displayName}`);
+			return parsed;
+			
+		} catch (error: any) {
+			lastError = error;
+			console.error(`❌ Error with ${GEMINI_MODELS[modelName].displayName}:`, error.message);
+			
+			// Check if we should try fallback model
+			const isCapacityError = error.status && CAPACITY_ERROR_CODES.has(error.status);
+			const isLastModel = modelName === orderedModels[orderedModels.length - 1];
+			
+			if (!isCapacityError || isLastModel) {
+				// If it's not a capacity error, or this is the last model, throw immediately
+				break;
+			}
+			
+			console.log(`↘️ Falling back to next model...`);
+		}
+	}
+	
+	// All models failed
+	throw new Error(`Failed to generate activity cards after trying all models: ${lastError?.message || "Unknown error"}`);
 };
 
