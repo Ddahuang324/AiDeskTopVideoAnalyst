@@ -9,9 +9,8 @@ interface StartAnalysisOptions {
 }
 
 interface GenerateAiSummaryOptions {
-  stage1SystemPrompt?: string;  // 阶段1系统提示词（可选）
-  customSummaryPrompt: string;  // 阶段1提示词
-  customJsonPrompt: string;     // 阶段2提示词
+  customSummaryPrompt: string;  // 用户自定义总结提示词
+  customJsonPrompt: string;     // 用户自定义JSON生成提示词
   activityCards: ActivityCard[];
   observations: Observation[];
   videoMeta?: { durationSec?: number; fileName?: string };
@@ -98,7 +97,6 @@ export const generateAiSummary = async (
     }
 
     const payload = {
-      stage1SystemPrompt: options.stage1SystemPrompt,
       customSummaryPrompt: options.customSummaryPrompt,
       customJsonPrompt: options.customJsonPrompt,
       activityCards: options.activityCards,

@@ -80,13 +80,13 @@ export function getFallbackSummary(preference: ModelPreference): string {
  */
 export const GENERATION_CONFIGS = {
 	transcription: {
-		temperature: 0.3,
-		maxOutputTokens: 8192,
+		temperature: 0.1,
+		maxOutputTokens: 16384,
 		responseMimeType: "application/json" as const,
 	},
 	summarization: {
-		temperature: 0.25,
-		maxOutputTokens: 8192,
+		temperature: 0.2,
+		maxOutputTokens: 16384,
 		responseMimeType: "application/json" as const,
 	}
 };

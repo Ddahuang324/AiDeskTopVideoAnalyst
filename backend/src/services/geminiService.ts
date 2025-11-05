@@ -16,7 +16,7 @@ import {
 	getOrderedModels,
 	GEMINI_MODELS
 } from "../config/geminiConfig";
-import { STAGE1_SYSTEM_PROMPT, STAGE2_SYSTEM_PROMPT } from "./promptTemplates";
+import { STAGE2_SYSTEM_PROMPT } from "./promptTemplates";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 if (!apiKey) {
@@ -62,6 +62,11 @@ export interface AnalysisResultOutput {
 	tags: string[];
 	keyFindings?: { point: string; evidence: string[] }[];
 	productivityScore?: number;
+	thematicBreakdown?: {
+		theme: string;
+		durationPercentage: number;
+		keyActions: string[];
+	}[];
 	nextActions?: string[];
 }
 
@@ -350,41 +355,69 @@ export const transcribeVideo = async (
 	).padStart(2, "0")}`;
 
 	const prompt = `
-# Video Transcription Prompt
+# High-Fidelity Workflow Transcription (Code-Aware)
 
-Your job is to transcribe someone's computer usage into a small number of meaningful activity segments.
+Your job is to transcribe someone's computer usage into a small number of meaningful activity segments while preserving as much on-screen information as is useful — especially any code, commands, error messages, filenames, and URLs.
 
 ## CRITICAL: This video is exactly ${durationString} long. ALL timestamps MUST be within 00:00 to ${durationString}.
 
-## Golden Rule: Aim for 3-5 segments per 15-minute video (fewer is better than more)
+## Golden Rule: Aim for 3–5 segments per 15-minute video (fewer is better than more).
 
-## Core Principles:
-1. **Group by purpose, not by platform** - If someone is planning a trip across 5 websites, that's ONE segment
-2. **Include interruptions in the description** - Don't create segments for brief distractions
-3. **Only split when context changes for 2-3+ minutes** - Quick checks don't count as context switches
-4. **Combine related activities** - Multiple videos on the same topic = one segment
-5. **Think in terms of "sessions"** - What would you tell a friend you spent time doing?
-6. **Idle detection** - if the screen stays exactly the same for 5+ minutes, make sure to note that within the observation that the user was idle during that period and not performing and actions, but still be specific about what's currently on the screen.
+## Core Principles
+1. Group by purpose, not platform — If someone is coding across IDE, browser, and terminal for one task, that's ONE segment.
+2. Include brief interruptions inside the segment description — don't create segments for quick distractions (<2–3 min).
+3. Only split when the purpose changes for 2–3+ minutes.
+4. Combine related activities into one coherent session.
+5. Think in terms of "sessions" — what would you tell a friend you spent time doing?
+6. Idle detection — if the screen is unchanged for 5+ minutes, explicitly note the idle span and what's on-screen.
 
-## When to create a new segment:
-Only when the user switches to a COMPLETELY different purpose for MORE than 2-3 minutes:
+## High-Fidelity Capture Rules (Very Important)
+- Preserve on-screen text verbatim when it conveys meaning: window/tab titles, filenames/paths, commit IDs, test names, terminal output, error messages, prompts, slide titles, headings, visible function/method names, and URLs.
+- If any code, configuration, query, or shell command is visible or typed, include it EXACTLY as seen inside fenced code blocks with the correct language tag. Examples: \`\`\`ts, \`\`\`js, \`\`\`py, \`\`\`sh, \`\`\`bash, \`\`\`json, \`\`\`yaml, \`\`\`sql, \`\`\`html, \`\`\`css.
+- Preserve indentation and whitespace. Do not paraphrase or rewrite code. Do not rename variables. If the snippet is very long, include the most important contiguous fragment (up to ~80 lines) and add "[truncated]".
+- Only extract what is clearly legible. If uncertain text appears, you may mark the unclear portion with "?" rather than inventing content.
+- When relevant, include copied commands (e.g., npm, pip, git), error stack traces, and URLs. Prefer a short narrative followed by an Artifacts list.
+
+## Textual Knowledge Capture (Very Important)
+- If the video shows slides, articles, docs, or lecture notes, capture key definitions, theorems, rules, algorithms, step lists, and examples.
+- Quote short, pivotal sentences verbatim using quotes. For longer passages, summarize concisely and include the most important sentence in quotes.
+- Keep headings and list structure when helpful (use Markdown headings and bullet/numbered lists).
+- Represent math and formulas using inline $...$ or block $$...$$ when readable on screen.
+- Record key terms as they appear (do not rename). If the exact term is unclear, mark uncertain parts with "?".
+- Include visible citations or references (paper titles/authors/years) and any URLs shown.
+
+## When to create a new segment
+Create a new segment only when the user switches to a completely different purpose for more than 2–3 minutes, e.g.:
 - Entertainment → Work
-- Learning → Shopping  
+- Learning → Shopping
 - Project A → Project B
 - Topic X → Unrelated Topic Y
 
-## Format:
+## Output Format (JSON)
 \`\`\`json
 [
-  {
-    "startTimestamp": "MM:SS",
-    "endTimestamp": "MM:SS", 
-    "description": "1-3 sentences describing what the user accomplished"
-  }
+	{
+		"startTimestamp": "MM:SS",
+		"endTimestamp": "MM:SS",
+		"description": "Markdown allowed. Start with a 1–2 sentence summary, then include an Artifacts section with any visible code/commands/errors/URLs. Use fenced code blocks with language tags and preserve whitespace."
+	}
 ]
 \`\`\`
 
-Remember: The goal is to tell the story of what someone accomplished, not log every click. Group aggressively and only split when they truly change what they're doing for an extended period. If an activity is less than 2-3 minutes, it almost never deserves its own segment.
+## Description Template (guidance, not a rigid schema)
+Summary: One or two sentences describing what the user did/learned/built.
+Key on-screen text (selective): bullet points of notable titles/filenames/URLs.
+Artifacts:
+- Code (language):
+\`\`\`<lang>
+<exact code>
+\`\`\`
+- Command: <exact command>
+- Error: <exact message/trace>
+- URL: <exact URL>
+Notes: mention idle spans or brief unrelated checks without creating new segments.
+
+Remember: The goal is high-fidelity transcription that preserves technical details so the session can be reproduced later.
 `;
 
 	console.log("Starting video transcription with Gemini...");
@@ -526,11 +559,8 @@ export const generateActivityCards = async (
 	}
 
 	const observationLog = observations
-		.map(
-			(obs) =>
-				`[${obs.startTimestamp} - ${obs.endTimestamp}]: ${obs.description.replace(/\s+/g, " ").trim()}`,
-		)
-		.join("\n");
+		.map((obs) => `# ${obs.startTimestamp} - ${obs.endTimestamp}\n${obs.description.trim()}`)
+		.join("\n\n---\n\n");
 
 	const prompt = `
 You are a digital anthropologist, observing a user's raw activity log. Your goal is to synthesize this log into a high-level, human-readable story of their session, presented as a series of timeline cards.
@@ -543,6 +573,18 @@ You may adjust boundaries for clarity, but never introduce new gaps or overlaps.
 
 CORE DIRECTIVES:
 - Theme Test Before Extending: Extend the current card only when the new observations continue the same dominant activity. Shifts shorter than 10 minutes should be logged as distractions or merged into the adjacent segment that keeps the theme coherent; shifts ≥10 minutes become new cards.
+
+CODE AND TECHNICAL CONTENT (Very Important):
+- If observations contain fenced code blocks or explicit commands/errors/URLs, you MUST preserve the most relevant parts in the card's detailedSummary.
+- Include important code exactly as-is inside fenced code blocks with the correct language tag (e.g., \`\`\`ts, \`\`\`py, \`\`\`sh). Do not paraphrase or reformat. Preserve indentation and whitespace.
+- If code is lengthy, include only the portion central to the card's theme (you may add "[truncated]").
+- When the code is peripheral, summarize it briefly and keep the exact snippet out, but reference key filenames, functions, or commands.
+
+TEXTUAL KNOWLEDGE (Very Important):
+- If observations include lecture/article/doc content, reflect the key knowledge in detailedSummary using Markdown.
+- Prefer a short narrative plus a "Key Concepts" bullet list capturing definitions, rules, steps, and examples.
+- Represent formulas with $...$ or $$...$$ where clear; include exact pivotal sentences in quotes.
+- Add a short "References" section with visible titles/authors/years/URLs when present.
 
 APP SITES (Website Logos)
 Identify the main app or website used for each card and include an appSites object.
@@ -699,18 +741,14 @@ Return ONLY a JSON array with this EXACT structure:
 };
 
 /**
- * 阶段1：基于用户自定义提示词生成自由文本的总结笔记
- * 一阶提示词（STAGE1_SYSTEM_PROMPT）固定在后端，保证格式统一
- * 二阶提示词（customSummaryPrompt）由用户在前端定义，影响内容风格
- * @param stage1SystemPrompt 阶段1系统提示词（可选，默认使用内置）
- * @param customSummaryPrompt 用户自定义的总结提示词（二阶提示词）
+ * 生成自由文本的总结笔记（直接使用用户自定义提示词）
+ * @param customSummaryPrompt 用户自定义的总结提示词
  * @param activityCards 活动卡片数组
  * @param observations 原始观察数据
  * @param userSelectedModel 用户选择的模型
  * @param providedApiKey API密钥
  */
 export const draftSummaryNotes = async (
-	stage1SystemPrompt: string | undefined,
 	customSummaryPrompt: string,
 	activityCards: ActivityCard[],
 	observations: Observation[],
@@ -732,14 +770,8 @@ export const draftSummaryNotes = async (
 		)
 		.join('\n\n');
 
-	// 使用提供的系统提示词或默认的
-	const effectiveSystemPrompt = stage1SystemPrompt || STAGE1_SYSTEM_PROMPT;
-
-	// 组合一阶提示词（系统）+ 二阶提示词（用户指导）+ 数据
+	// 组合用户自定义提示词 + 数据
 	const userMessage = `
-${effectiveSystemPrompt}
-
-【用户的自定义指导】
 ${customSummaryPrompt}
 
 【可用的分析数据】
@@ -859,6 +891,18 @@ ${JSON.stringify(activityCards, null, 2)}
 				},
 			},
 			productivityScore: { type: SchemaType.INTEGER },
+			thematicBreakdown: {
+				type: SchemaType.ARRAY,
+				items: {
+					type: SchemaType.OBJECT,
+					properties: {
+						theme: { type: SchemaType.STRING },
+						durationPercentage: { type: SchemaType.INTEGER },
+						keyActions: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+					},
+					required: ["theme", "durationPercentage", "keyActions"],
+				},
+			},
 			nextActions: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
 		},
 		required: ["title", "summary", "tags"],
@@ -924,7 +968,6 @@ ${JSON.stringify(activityCards, null, 2)}
  * 便捷方法：一键生成完整的AI总结结果
  */
 export const generateAiSummaryResult = async (
-	stage1SystemPrompt: string | undefined,  // 阶段1系统提示词（可选）
 	customSummaryPrompt: string,
 	customJsonPrompt: string,
 	activityCards: ActivityCard[],
@@ -936,7 +979,6 @@ export const generateAiSummaryResult = async (
 	console.log("🚀 Starting two-stage AI summary generation...");
 	
 	const notes = await draftSummaryNotes(
-		stage1SystemPrompt,  // 传递阶段1系统提示词
 		customSummaryPrompt,
 		activityCards,
 		observations,

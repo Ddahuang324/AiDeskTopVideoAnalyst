@@ -16,6 +16,11 @@ export interface AnalysisResult {
   // 扩展字段：用于存储原始分析数据
   keyFindings?: { point: string; evidence?: string[] }[];
   productivityScore?: number; // 0-100
+  thematicBreakdown?: {
+    theme: string;
+    durationPercentage: number;
+    keyActions: string[];
+  }[];
   nextActions?: string[];
   // 记录使用的自定义提示词
   customPromptUsed?: string;

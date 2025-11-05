@@ -1,4 +1,6 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { motion, Variants } from 'framer-motion';
 import { AnalysisResult } from '../types';
 
@@ -85,9 +87,41 @@ const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ analysis, onClose
                         {analysis.title}
                     </h1>
                 </motion.div>
-                <motion.p variants={contentItemVariants} className="text-base leading-relaxed text-gray-700 mb-8">
-                    {analysis.summary}
-                </motion.p>
+                <motion.div variants={contentItemVariants} className="text-base leading-relaxed text-gray-700 mb-8">
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        code({inline, className, children, ...props}) {
+                          const lang = /language-([\w-]+)/.exec(className || '');
+                          if (inline) {
+                            return <code className="px-1 py-0.5 rounded bg-gray-100 text-gray-800" {...props}>{children}</code>;
+                          }
+                          return (
+                            <pre className="bg-gray-900 text-gray-100 rounded-lg p-4 overflow-auto text-sm">
+                              <code className={className || (lang ? `language-${lang[1]}` : undefined)} {...props}>
+                                {children}
+                              </code>
+                            </pre>
+                          );
+                        },
+                        a({children, ...props}) {
+                          return <a className="text-[#B8860B] underline underline-offset-2" target="_blank" rel="noreferrer" {...props}>{children}</a>;
+                        },
+                        h1({children}) { return <h1 className="text-2xl font-semibold mb-3">{children}</h1>; },
+                        h2({children}) { return <h2 className="text-xl font-semibold mb-2">{children}</h2>; },
+                        h3({children}) { return <h3 className="text-lg font-semibold mb-2">{children}</h3>; },
+                        p({children}) { return <p className="mb-3 leading-7">{children}</p>; },
+                        ul({children}) { return <ul className="list-disc pl-5 space-y-1 mb-3">{children}</ul>; },
+                        ol({children}) { return <ol className="list-decimal pl-5 space-y-1 mb-3">{children}</ol>; },
+                        blockquote({children}) { return <blockquote className="border-l-4 border-gray-300 pl-4 italic text-gray-600 mb-3">{children}</blockquote>; },
+                        table({children}) { return <div className="overflow-x-auto mb-3"><table className="min-w-full border border-gray-200">{children}</table></div>; },
+                        th({children}) { return <th className="border border-gray-200 px-2 py-1 bg-gray-50 text-left">{children}</th>; },
+                        td({children}) { return <td className="border border-gray-200 px-2 py-1">{children}</td>; },
+                      }}
+                    >
+                      {analysis.summary}
+                    </ReactMarkdown>
+                </motion.div>
                 
                 <motion.div variants={contentItemVariants} className="mt-auto pt-8 border-t border-gray-200">
                     <h3 className="text-sm font-semibold tracking-widest uppercase text-gray-500 mb-4">标签</h3>

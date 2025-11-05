@@ -54,11 +54,17 @@ const RecordButton: React.FC<RecordButtonProps> = ({
         throw new Error('No prompt selected');
       }
       
+      console.log('[RecordButton] Active prompt details:', {
+        id: activePrompt.id,
+        title: activePrompt.title,
+        content: activePrompt.content,
+        type: activePrompt.type,
+        isDefault: activePrompt.isDefault
+      });
       console.log('[RecordButton] Generating AI summary with prompt:', activePrompt.title);
       
       // 调用两阶段AI总结生成
       const aiSummaryResult = await generateAiSummary({
-        stage1SystemPrompt: undefined, // 使用默认的阶段1系统提示词
         customSummaryPrompt: activePrompt.content,
         customJsonPrompt: '请生成结构化的分析报告，包含标题、总结、标签、关键发现、生产力评分和后续行动建议。', // 默认的JSON生成提示词
         activityCards: basicResult.activityCards,

@@ -76,9 +76,8 @@ export const generateAiSummary = async (req: Request, res: Response) => {
 
   try {
     const {
-      stage1SystemPrompt,   // 阶段1：系统提示词（可选，默认使用内置）
-      customSummaryPrompt,  // 阶段1：总结提示词
-      customJsonPrompt,     // 阶段2：JSON生成提示词
+      customSummaryPrompt,  // 用户自定义总结提示词
+      customJsonPrompt,     // 用户自定义JSON生成提示词
       activityCards,        // 从前一步得到的活动卡片
       observations,         // 从前一步得到的观察数据
       videoMeta,            // 视频元数据 { durationSec?, fileName? }
@@ -121,7 +120,6 @@ export const generateAiSummary = async (req: Request, res: Response) => {
 
     // 调用两阶段提示词工程
     const result: AnalysisResultOutput = await generateAiSummaryResult(
-      stage1SystemPrompt,   // 阶段1系统提示词
       customSummaryPrompt,
       customJsonPrompt,
       activityCards as ActivityCard[],
