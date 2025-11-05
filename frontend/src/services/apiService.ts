@@ -1,61 +1,53 @@
-import type { WorkflowRecording, WorkflowSummary, CustomPrompt } from '../types';
 
-const API_BASE_URL = '/api'; // Assuming the API is served from the same origin
+import { ActivityCard, Observation } from "./geminiService";
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
-  }
-  return response.json();
-}
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:3001';
 
-export const apiService = {
-  startRecording: (): Promise<WorkflowRecording> => {
-    return request(`${API_BASE_URL}/recordings/start`, { method: 'POST' });
-  },
+/**
+ * Uploads a single video chunk to the backend.
+ * @param {Blob} chunk The video chunk to upload.
+ * @returns {Promise<any>} The response from the server.
+ */
+export const uploadVideoChunk = async (chunk: Blob): Promise<any> => {
+  const formData = new FormData();
+  formData.append('chunk', chunk, `chunk-${Date.now()}.webm`);
 
-  stopRecording: (): Promise<WorkflowRecording> => {
-    return request(`${API_BASE_URL}/recordings/stop`, { method: 'POST' });
-  },
-
-  getRecordings: (): Promise<WorkflowRecording[]> => {
-    return request(`${API_BASE_URL}/recordings`);
-  },
-
-  getRecordingById: (id: string): Promise<WorkflowRecording> => {
-    return request(`${API_BASE_URL}/recordings/${id}`);
-  },
-
-  getSummaries: (): Promise<WorkflowSummary[]> => {
-    return request(`${API_BASE_URL}/summaries`);
-  },
-
-  getSummaryByRecordingId: (recordingId: string): Promise<WorkflowSummary> => {
-    return request(`${API_BASE_URL}/summaries/${recordingId}`);
-  },
-
-  getPrompts: (): Promise<CustomPrompt[]> => {
-    return request(`${API_BASE_URL}/prompts`);
-  },
-
-  createPrompt: (prompt: CustomPrompt): Promise<CustomPrompt> => {
-    return request(`${API_BASE_URL}/prompts`, {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/analysis/upload`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(prompt),
+      body: formData,
     });
-  },
 
-  updatePrompt: (id: string, prompt: CustomPrompt): Promise<CustomPrompt> => {
-    return request(`${API_BASE_URL}/prompts/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(prompt),
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Failed to upload video chunk.');
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error uploading video chunk:', error);
+    throw error;
+  }
+};
+
+/**
+ * Signals the backend to start the analysis process.
+ * @returns {Promise<{ observations: Observation[]; activityCards: ActivityCard[] }>} The analysis result.
+ */
+export const startAnalysis = async (): Promise<{ observations: Observation[]; activityCards: ActivityCard[] }> => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/analysis/analyze`, {
+      method: 'POST',
     });
-  },
 
-  deletePrompt: (id: string): Promise<void> => {
-    return request(`${API_BASE_URL}/prompts/${id}`, { method: 'DELETE' });
-  },
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Failed to start analysis.');
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error starting analysis:', error);
+    throw error;
+  }
 };

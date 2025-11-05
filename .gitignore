@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+node_modules/
 /.pnp
 .pnp.js
 
@@ -34,7 +34,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 
-# Ignore other directories except frontend
+# Uploaded video files and temporary files
+backend/uploads/
+backend/temp/
+
+# Ignore other directories - only keep backend, frontend, and git files
 Dayflow-main/
 specs/
+*.md
+!README.md
+*.sh
+*.txt
 

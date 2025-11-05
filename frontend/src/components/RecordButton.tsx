@@ -1,45 +1,64 @@
-import type { FC } from 'react';
-import { Button, message } from 'antd';
-import { useNavigate } from 'react-router-dom';
-import { useRecordingStore } from '../stores/recordingStore';
-import { useSummaryStore } from '../stores/summaryStore';
-import { usePromptStore } from '../stores/promptStore';
-import { recordingService } from '../services/recordingService';
 
-const RecordButton: FC = () => {
-  const { isRecording, startRecording, stopRecording } = useRecordingStore();
-  const { setSummary } = useSummaryStore();
-  const { prompts } = usePromptStore();
-  const navigate = useNavigate();
+import React, { useState } from 'react';
+import recordingService from '../services/recordingService';
+import { startAnalysis } from '../services/apiService';
+import { useSummary } from '../store/summaryStore';
+// import { useNavigate } from 'react-router-dom'; // Assuming react-router-dom for navigation
 
-  const handleToggleRecording = async () => {
-    if (isRecording) {
-      message.loading({ content: '正在分析您的工作流...\n这可能需要几分钟时间。' , duration: 0 });
-      // For now, we'll use the first prompt if available, or a default one.
-      const selectedPrompt = prompts[0]?.text || '请总结一下我的活动。';
+const RecordButton: React.FC = () => {
+  const [isRecording, setIsRecording] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const { setSummary } = useSummary();
+  // const navigate = useNavigate();
 
-      try {
-        const analysisResult = await recordingService.stop(selectedPrompt);
-        setSummary(analysisResult); // This needs to be adjusted based on actual data structure
-        message.destroy();
-        navigate('/summary');
-      } catch (error) {
-        console.error('Failed to analyze workflow:', error);
-        message.error('分析失败，请检查控制台获取更多信息。');
-      }
-      stopRecording();
-    } else {
+  const handleStartRecording = async () => {
+    console.log('[RecordButton] Starting recording...');
+    try {
       await recordingService.start();
-      startRecording();
+      setIsRecording(true);
+      console.log('[RecordButton] Recording started successfully.');
+    } catch (error) {
+      console.error('[RecordButton] Failed to start recording:', error);
+    }
+  };
+
+  const handleStopAndAnalyze = async () => {
+    console.log('[RecordButton] Stopping recording and analyzing...');
+    setIsLoading(true);
+
+    try {
+      await recordingService.stop();
+      const recordedChunks = recordingService.getRecordedChunks();
+      console.log(`[RecordButton] Recording stopped. Uploaded ${recordedChunks.length} chunks`);
+      
+      console.log('[RecordButton] Starting analysis...');
+      const result = await startAnalysis();
+      console.log('[RecordButton] Analysis Result:', result);
+      setSummary(result.observations, result.activityCards);
+      // navigate('/summary'); // Navigate to summary page
+    } catch (error) {
+      console.error('[RecordButton] Analysis failed:', error);
+      alert(`Analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsLoading(false);
+      setIsRecording(false);
     }
   };
 
   return (
-    <Button type="primary" danger={isRecording} onClick={handleToggleRecording}>
-      {isRecording ? '停止并分析' : '开始录制'}
-    </Button>
+    <div>
+      {!isRecording ? (
+        <button onClick={handleStartRecording} disabled={isLoading}>
+          {isLoading ? 'Starting...' : 'Start Recording'}
+        </button>
+      ) : (
+        <button onClick={handleStopAndAnalyze} disabled={isLoading}>
+          {isLoading ? 'Analyzing...' : 'Stop and Analyze'}
+        </button>
+      )}
+      {isLoading && <p>Analysis in progress, please wait...</p>}
+    </div>
   );
 };
 
 export default RecordButton;
-
