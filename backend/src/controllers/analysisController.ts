@@ -18,6 +18,12 @@ export const triggerAnalysis = async (req: Request, res: Response) => {
   try {
     // Get model name from request body, default to FLASH if not provided
     const requestedModel = req.body?.modelName as string | undefined;
+    const apiKey = req.body?.apiKey as string | undefined;
+    
+    if (!apiKey) {
+      return res.status(400).json({ message: 'API Key is required. Please configure it in settings.' });
+    }
+
     let selectedModel: GeminiModel = GeminiModel.FLASH; // Default
     
     // Validate and map the requested model
@@ -35,9 +41,9 @@ export const triggerAnalysis = async (req: Request, res: Response) => {
 
     const stitchedVideoPath = await stitchVideos();
     const videoDuration = await getVideoDuration(stitchedVideoPath);
-    const fileUri = await uploadVideo(stitchedVideoPath);
-    const observations = await transcribeVideo(fileUri, videoDuration, selectedModel);
-    const activityCards = await generateActivityCards(observations, selectedModel);
+    const fileUri = await uploadVideo(stitchedVideoPath, apiKey);
+    const observations = await transcribeVideo(fileUri, videoDuration, selectedModel, apiKey);
+    const activityCards = await generateActivityCards(observations, selectedModel, apiKey);
 
     res.status(200).json({ observations, activityCards });
   } catch (error) {

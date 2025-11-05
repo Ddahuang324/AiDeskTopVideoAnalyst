@@ -1,4 +1,3 @@
-
 import { uploadVideoChunk } from './apiService';
 
 class RecordingService {
@@ -48,6 +47,7 @@ class RecordingService {
     } catch (error) {
       console.error('Error starting screen recording:', error);
       await this.stop(); // Clean up on error
+      throw error;
     }
   }
 

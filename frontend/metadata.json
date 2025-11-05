@@ -1,0 +1,5 @@
+{
+  "name": "灵视分析",
+  "description": "一款AI桌面分析总结工具。录制您的屏幕，获取智能分析和摘要，并将洞察力转化为清晰的卡片。",
+  "requestFramePermissions": []
+}

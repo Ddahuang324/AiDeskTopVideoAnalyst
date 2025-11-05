@@ -1,4 +1,3 @@
-
 export interface Observation {
 	startTimestamp: string;
 	endTimestamp: string;

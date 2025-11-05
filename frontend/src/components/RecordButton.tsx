@@ -1,8 +1,7 @@
-
 import React, { useState } from 'react';
 import recordingService from '../services/recordingService';
 import { startAnalysis } from '../services/apiService';
-import { useSummary } from '../store/summaryStore';
+import { useSummary } from '../stores/summaryStore';
 // import { useNavigate } from 'react-router-dom'; // Assuming react-router-dom for navigation
 
 const RecordButton: React.FC = () => {

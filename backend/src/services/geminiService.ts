@@ -1,3 +1,4 @@
+import "../config/env";
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 // Server-side File Manager for uploading large media files
 // Ref: https://github.com/google/generative-ai-js
@@ -98,6 +99,21 @@ interface GeminiFileResponse {
 const sleep = (ms: number): Promise<void> =>
 	new Promise(resolve => setTimeout(resolve, ms));
 
+// Helper to get the effective API key and update global state
+const getEffectiveApiKey = (providedApiKey?: string): string => {
+	return providedApiKey || process.env.GEMINI_API_KEY || apiKey;
+};
+
+// Helper to create appendApiKey function with custom API key
+const createAppendApiKey = (customApiKey: string) => {
+	return (url: string): string => {
+		if (!customApiKey) {
+			throw new Error("GEMINI_API_KEY is required to call Gemini APIs.");
+		}
+		return url.includes("?") ? `${url}&key=${customApiKey}` : `${url}?key=${customApiKey}`;
+	};
+};
+
 const appendApiKey = (url: string): string => {
 	if (!apiKey) {
 		throw new Error("GEMINI_API_KEY is required to call Gemini APIs.");
@@ -115,9 +131,11 @@ const isNetworkError = (error: unknown): boolean => {
 const waitForGeminiFileActive = async (
 	fileName: string,
 	manager?: GoogleAIFileManager | null,
+	customApiKey?: string,
 ): Promise<GeminiFile> => {
 	const deadline = Date.now() + FILE_POLL_TIMEOUT_MS;
 	let lastState: string | undefined;
+	const appendUrl = customApiKey ? createAppendApiKey(customApiKey) : appendApiKey;
 
 	while (Date.now() < deadline) {
 		try {
@@ -125,7 +143,7 @@ const waitForGeminiFileActive = async (
 			if (manager) {
 				file = (await manager.getFile(fileName)) as GeminiFile;
 			} else {
-				const statusUrl = appendApiKey(`${GEMINI_API_BASE_URL}/v1beta/${fileName}`);
+				const statusUrl = appendUrl(`${GEMINI_API_BASE_URL}/v1beta/${fileName}`);
 				const response = await fetch(statusUrl);
 				if (!response.ok) {
 					const body = await response.text();
@@ -161,8 +179,9 @@ const waitForGeminiFileActive = async (
 	throw new Error(`Timed out waiting for Gemini file ${fileName} to become ACTIVE.`);
 };
 
-const initiateResumableUpload = async (displayName: string): Promise<string> => {
-	const initUrl = appendApiKey(`${GEMINI_API_BASE_URL}/upload/v1beta/files`);
+const initiateResumableUpload = async (displayName: string, customApiKey?: string): Promise<string> => {
+	const appendUrl = customApiKey ? createAppendApiKey(customApiKey) : appendApiKey;
+	const initUrl = appendUrl(`${GEMINI_API_BASE_URL}/upload/v1beta/files`);
 	const metadata = {
 		file: {
 			display_name: displayName,
@@ -226,11 +245,11 @@ const completeResumableUpload = async (uploadUrl: string, filePath: string): Pro
 	return payload.file;
 };
 
-const uploadVideoWithResumable = async (filePath: string, displayName: string): Promise<string> => {
+const uploadVideoWithResumable = async (filePath: string, displayName: string, customApiKey?: string): Promise<string> => {
 	console.log("[Gemini] Using manual resumable upload flow.");
-	const uploadUrl = await initiateResumableUpload(displayName);
+	const uploadUrl = await initiateResumableUpload(displayName, customApiKey);
 	const uploadedFile = await completeResumableUpload(uploadUrl, filePath);
-	const activeFile = await waitForGeminiFileActive(uploadedFile.name, null);
+	const activeFile = await waitForGeminiFileActive(uploadedFile.name, null, customApiKey);
 	if (!activeFile.uri) {
 		throw new Error("Gemini file became ACTIVE but no URI was returned.");
 	}
@@ -238,7 +257,7 @@ const uploadVideoWithResumable = async (filePath: string, displayName: string): 
 	return activeFile.uri;
 };
 
-const uploadVideoWithFileManager = async (filePath: string, displayName: string, manager: GoogleAIFileManager): Promise<string> => {
+const uploadVideoWithFileManager = async (filePath: string, displayName: string, manager: GoogleAIFileManager, customApiKey?: string): Promise<string> => {
 	console.log("[Gemini] Uploading via GoogleAIFileManager.");
 	const uploadResponse = await manager.uploadFile(filePath, {
 		mimeType: VIDEO_MIME_TYPE,
@@ -250,7 +269,7 @@ const uploadVideoWithFileManager = async (filePath: string, displayName: string,
 		throw new Error("GoogleAIFileManager returned no file name.");
 	}
 
-	const activeFile = await waitForGeminiFileActive(fileName, manager);
+	const activeFile = await waitForGeminiFileActive(fileName, manager, customApiKey);
 	if (!activeFile.uri) {
 		throw new Error("Gemini file became ACTIVE but provided no URI.");
 	}
@@ -262,25 +281,37 @@ const uploadVideoWithFileManager = async (filePath: string, displayName: string,
 /**
  * Uploads a video file to the Gemini File API.
  * @param {string} filePath The path to the video file to upload.
+ * @param {string} [providedApiKey] The API key to use. If not provided, uses the environment variable.
  * @returns {Promise<string>} A promise that resolves with the `file.uri` from the API response.
  */
-export const uploadVideo = async (filePath: string): Promise<string> => {
+export const uploadVideo = async (filePath: string, providedApiKey?: string): Promise<string> => {
 	console.log(`Uploading video: ${filePath}`);
 
 	if (!fs.existsSync(filePath)) {
 		throw new Error(`Video file not found: ${filePath}`);
 	}
 
-	if (!apiKey) {
+	// Use provided API key or fall back to environment variable
+	const effectiveApiKey = providedApiKey || process.env.GEMINI_API_KEY || "";
+	
+	if (!effectiveApiKey) {
 		throw new Error("GEMINI_API_KEY is not configured. Set it in your environment to use Gemini uploads.");
 	}
 
 	const displayName = `workflow-video-${path.basename(filePath)}`;
 	let fileManagerError: unknown = null;
 
-	if (fileManager) {
+	// Initialize file manager with the effective API key
+	let effectiveFileManager: GoogleAIFileManager | null = null;
+	try {
+		effectiveFileManager = new GoogleAIFileManager(effectiveApiKey);
+	} catch (error) {
+		console.warn("[Gemini] Could not initialize GoogleAIFileManager:", error);
+	}
+
+	if (effectiveFileManager) {
 		try {
-			return await uploadVideoWithFileManager(filePath, displayName, fileManager);
+			return await uploadVideoWithFileManager(filePath, displayName, effectiveFileManager, effectiveApiKey);
 		} catch (error) {
 			fileManagerError = error;
 			console.error("[Gemini] File manager upload failed, falling back to manual resumable flow:", error);
@@ -290,7 +321,7 @@ export const uploadVideo = async (filePath: string): Promise<string> => {
 	}
 
 	try {
-		return await uploadVideoWithResumable(filePath, displayName);
+		return await uploadVideoWithResumable(filePath, displayName, effectiveApiKey);
 	} catch (fallbackError) {
 		console.error("[Gemini] Resumable upload failed:", fallbackError);
 		const messages: string[] = [];
@@ -312,13 +343,18 @@ export const uploadVideo = async (filePath: string): Promise<string> => {
  * @param {string} fileUri The URI of the uploaded video file.
  * @param {number} videoDuration The duration of the video in seconds.
  * @param {GeminiModel} userSelectedModel The model selected by the user in the frontend.
+ * @param {string} [providedApiKey] The API key to use. If not provided, uses the environment variable.
  * @returns {Promise<any>} A promise that resolves with the parsed JSON array of observations.
  */
 export const transcribeVideo = async (
 	fileUri: string,
 	videoDuration: number,
 	userSelectedModel?: GeminiModel,
+	providedApiKey?: string,
 ): Promise<Observation[]> => {
+	// Use provided API key or fall back to environment variable
+	const effectiveApiKey = providedApiKey || process.env.GEMINI_API_KEY || apiKey;
+	const genAIInstance = new GoogleGenerativeAI(effectiveApiKey);
 	const durationMinutes = Math.floor(videoDuration / 60);
 	const durationSeconds = Math.round(videoDuration % 60);
 	const durationString = `${String(durationMinutes).padStart(2, "0")}:${String(
@@ -400,7 +436,7 @@ Remember: The goal is to tell the story of what someone accomplished, not log ev
 				},
 			};
 
-			const model = genAI.getGenerativeModel({ model: modelName });
+			const model = genAIInstance.getGenerativeModel({ model: modelName });
 
 			if (!fileUri || (!fileUri.startsWith("https://") && !fileUri.startsWith("gs://"))) {
 				throw new Error(
@@ -485,12 +521,18 @@ Remember: The goal is to tell the story of what someone accomplished, not log ev
  * Generates higher-level activity cards from the list of observations.
  * @param {Observation[]} observations The observations returned by the transcription step.
  * @param {GeminiModel} userSelectedModel The model selected by the user in the frontend.
+ * @param {string} [providedApiKey] The API key to use. If not provided, uses the environment variable.
  * @returns {Promise<ActivityCard[]>} Structured activity cards ready for the frontend.
  */
 export const generateActivityCards = async (
 	observations: Observation[],
 	userSelectedModel?: GeminiModel,
+	providedApiKey?: string,
 ): Promise<ActivityCard[]> => {
+	// Use provided API key or fall back to environment variable
+	const effectiveApiKey = providedApiKey || process.env.GEMINI_API_KEY || apiKey;
+	const genAIInstance = new GoogleGenerativeAI(effectiveApiKey);
+
 	if (!observations.length) {
 		throw new Error("No observations provided for activity card generation.");
 	}
@@ -625,7 +667,7 @@ Return ONLY a JSON array with this EXACT structure:
 		try {
 			console.log(`Generating activity cards with model: ${GEMINI_MODELS[modelName].displayName}`);
 			
-			const model = genAI.getGenerativeModel({ model: modelName });
+			const model = genAIInstance.getGenerativeModel({ model: modelName });
 
 			const result = await model.generateContent({
 				contents: [
